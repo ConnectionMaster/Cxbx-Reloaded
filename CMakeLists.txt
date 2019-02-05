@@ -352,6 +352,8 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/CxbxLoader")
 
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/CxbxEmulator")
 
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/CxbxGUI")
+
 # Issues with compile (the same with develop branch) and
 # for some reason did not put the files into virtual folder?
 # Might need to put the list in the source folder for workaround fix.
@@ -377,7 +379,7 @@ set_target_properties(cxbxr-debugger cs_x86 Tests_cs_x86 capstone-shared cstool
 )
 
 # CxbxR-Debugger project with third-party libraries
-set_target_properties(cxbx CxbxLoader CxbxEmulator subhook XbSymbolDatabase vsbc libtommath libtomcrypt
+set_target_properties(cxbx CxbxGUI CxbxLoader CxbxEmulator subhook XbSymbolDatabase vsbc libtommath libtomcrypt
  PROPERTIES FOLDER Cxbx-Reloaded
 )
 

@@ -37,7 +37,7 @@ namespace xboxkrnl
 #include "EmuEEPROM.h" // For EEPROMInfo, EEPROMInfos
 #include "core\kernel\init\CxbxKrnl.h"
 #include "DlgEepromConfig.h"
-#include "ResCxbx.h"
+#include "resource/ResCxbx.h"
 #include <Commctrl.h>
 
 
