@@ -30,7 +30,9 @@
 #include "Mutex.h"
 #include "common\IPCHybrid.hpp"
 #include "common\input\Button.h"
-
+#include "common/xbox_types.h"
+#include "CxbxVersion.h"
+#include "core/common/imgui/settings.h"
 #include <memory.h>
 
 extern HMODULE hActiveModule; // Equals EXE Module handle in (GUI) Cxbx.exe / cxbxr.exe, equals DLL Module handle in cxbxr-emu.dll
@@ -64,6 +66,11 @@ class EmuShared : public Mutex
 		// * Fixed memory allocation size
 		// ******************************************************************
 		unsigned int m_size;
+
+		// ******************************************************************
+		// * Git version string of the executable that first launched
+		// ******************************************************************
+		char m_git_version[GitVersionMaxLength];
 
 		// ******************************************************************
 		// * Each process needs to call this to initialize shared memory
@@ -128,23 +135,25 @@ class EmuShared : public Mutex
 		// ******************************************************************
 		void GetInputDevTypeSettings(int* type, int port) { Lock(); *type = m_DeviceType[port]; Unlock(); }
 		void SetInputDevTypeSettings(const int* type, int port) { Lock(); m_DeviceType[port] = *type; Unlock(); }
+		void GetInputSlotTypeSettings(int *type, int port, int slot) { Lock(); *type = m_SlotDeviceType[port][slot]; Unlock(); }
+		void SetInputSlotTypeSettings(const int *type, int port, int slot) { Lock(); m_SlotDeviceType[port][slot] = *type; Unlock(); }
 		void GetInputDevNameSettings(char* name, int port) { Lock(); strncpy(name, m_DeviceName[port], 50); Unlock(); }
 		void SetInputDevNameSettings(const char* name, int port) { Lock(); strncpy(m_DeviceName[port], name, 50); Unlock(); }
-		void GetInputBindingsSettings(char button_str[][30], int max_num_buttons, int port)
+		void GetInputBindingsSettings(char button_str[][HOST_BUTTON_NAME_LENGTH], int max_num_buttons, int port)
 		{
-			assert(max_num_buttons <= XBOX_CTRL_NUM_BUTTONS);
+			assert(max_num_buttons <= HIGHEST_NUM_BUTTONS);
 			Lock();
 			for (int i = 0; i < max_num_buttons; i++) {
-				strncpy(button_str[i], m_DeviceControlNames[port][i], 30);
+				strncpy(button_str[i], m_DeviceControlNames[port][i], HOST_BUTTON_NAME_LENGTH);
 			}
 			Unlock();
 		}
-		void SetInputBindingsSettings(const char button_str[][30], int max_num_buttons, int port)
+		void SetInputBindingsSettings(const char button_str[][HOST_BUTTON_NAME_LENGTH], int max_num_buttons, int port)
 		{
-			assert(max_num_buttons <= XBOX_CTRL_NUM_BUTTONS);
+			assert(max_num_buttons <= HIGHEST_NUM_BUTTONS);
 			Lock();
 			for (int i = 0; i < max_num_buttons; i++) {
-				strncpy(m_DeviceControlNames[port][i], button_str[i], 30);
+				strncpy(m_DeviceControlNames[port][i], button_str[i], HOST_BUTTON_NAME_LENGTH);
 			}
 			Unlock();
 		}
@@ -152,10 +161,8 @@ class EmuShared : public Mutex
 		// ******************************************************************
 		// * Input option Accessors
 		// ******************************************************************
-		void GetInputMoAxisSettings(long *axis) { Lock(); *axis = m_MoAxisRange; Unlock(); }
-		void SetInputMoAxisSettings(const long axis) { Lock(); m_MoAxisRange = axis; Unlock(); }
-		void GetInputMoWheelSettings(long *wheel) { Lock(); *wheel = m_MoWheelRange; Unlock(); }
-		void SetInputMoWheelSettings(const long wheel) { Lock(); m_MoWheelRange = wheel; Unlock(); }
+		void GetInputGeneralSettings(Settings::s_input_general *input_general) { Lock(); *input_general = m_input_general; Unlock(); }
+		void SetInputGeneralSettings(const Settings::s_input_general *input_general) { Lock(); m_input_general = *input_general; Unlock(); }
 
 		// ******************************************************************
 		// * LLE Flags Accessors
@@ -198,7 +205,7 @@ class EmuShared : public Mutex
 		// * Debugging flag Accessors
 		// ******************************************************************
 		void GetDebuggingFlag(bool *value) { Lock(); *value = m_bDebugging; Unlock(); }
-		void SetDebuggingFlag(const bool *value) { Lock(); m_bDebugging = *value; Unlock(); }
+		void SetDebuggingFlag(const bool value) { Lock(); m_bDebugging = value; Unlock(); }
 #ifndef CXBX_LOADER // Temporary usage for cxbx.exe's emu
 		// ******************************************************************
 		// * Previous Memory Layout value Accessors
@@ -241,14 +248,77 @@ class EmuShared : public Mutex
 		// ******************************************************************
 		// * File storage location
 		// ******************************************************************
-		void GetStorageLocation(char *path) { Lock(); strncpy(path, m_core.szStorageLocation, MAX_PATH); Unlock(); }
-		void SetStorageLocation(const char *path) { Lock(); strncpy(m_core.szStorageLocation, path, MAX_PATH); Unlock(); }
+		void GetStorageLocation(char *path) { Lock(); strncpy(path, m_core.szStorageLocation, xbox::max_path); Unlock(); }
+		void SetStorageLocation(const char *path) { Lock(); strncpy(m_core.szStorageLocation, path, xbox::max_path); Unlock(); }
 
 		// ******************************************************************
 		// * ClipCursor flag Accessors
 		// ******************************************************************
 		void GetClipCursorFlag(bool *value) { Lock(); *value = m_bClipCursor; Unlock(); }
-		void SetClipCursorFlag(const bool *value) { Lock(); m_bClipCursor = *value; Unlock(); }
+		void SetClipCursorFlag(const bool value) { Lock(); m_bClipCursor = value; Unlock(); }
+
+		// ******************************************************************
+		// * ImGui Accessors
+		// ******************************************************************
+		void GetImGuiFocusFlag(bool *value) { Lock(); *value = m_imgui_general.is_focus; Unlock(); }
+		void SetImGuiFocusFlag(const bool value) { Lock(); m_imgui_general.is_focus = value; Unlock(); }
+
+		void GetImGuiIniSettings(char value[IMGUI_INI_SIZE_MAX]) {
+			Lock();
+			if (m_imgui_general.ini_size < IMGUI_INI_SIZE_MAX) {
+				value = '\0';
+				return;
+			}
+			strcpy_s(value, IMGUI_INI_SIZE_MAX, m_imgui_general.ini_settings);
+			Unlock();
+		}
+		void SetImGuiIniSettings(const char value[IMGUI_INI_SIZE_MAX]) {
+			Lock();
+			// Do not save if external size is less than internal limit
+			if (m_imgui_general.ini_size < IMGUI_INI_SIZE_MAX) {
+				return;
+			}
+			strcpy_s(m_imgui_general.ini_settings, IMGUI_INI_SIZE_MAX, value);
+			Unlock();
+		}
+
+		void GetImGuiAudioWindows(imgui_audio_windows *value) { Lock(); *value = m_imgui_audio_windows; Unlock(); }
+		void SetImGuiAudioWindows(const imgui_audio_windows* value) { Lock(); m_imgui_audio_windows = *value; Unlock(); }
+		void GetImGuiVideoWindows(imgui_video_windows*value) { Lock(); *value = m_imgui_video_windows; Unlock(); }
+		void SetImGuiVideoWindows(const imgui_video_windows* value) { Lock(); m_imgui_video_windows = *value; Unlock(); }
+
+
+		// ******************************************************************
+		// * Overlay Accessors
+		// ******************************************************************
+		void GetOverlaySettings(overlay_settings *value) { Lock(); *value = m_imgui_overlay_settings; Unlock(); }
+		void SetOverlaySettings(const overlay_settings* value) { Lock(); m_imgui_overlay_settings = *value; Unlock(); }
+
+		// ******************************************************************
+		// * Git version Accessor (only the get method is provided because it should not be changed)
+		// ******************************************************************
+		void GetGitVersion(char *value)
+		{
+			Lock();
+			std::strncpy(value, m_git_version, GetGitVersionLength() + 1);
+			Unlock();
+		}
+
+		// ******************************************************************
+		// * TitleMountPath Accessor
+		// ******************************************************************
+		void GetTitleMountPath(char *value)
+		{
+			Lock();
+			std::strncpy(value, m_TitleMountPath, sizeof(m_TitleMountPath));
+			Unlock();
+		}
+		void SetTitleMountPath(const char* value)
+		{
+			Lock();
+			std::strncpy(m_TitleMountPath, value, sizeof(m_TitleMountPath) - 1);
+			Unlock();
+		}
 
 		// ******************************************************************
 		// * Reset specific variables to default for kernel mode.
@@ -284,8 +354,6 @@ class EmuShared : public Mutex
 		// * Shared configuration
 		// ******************************************************************
 		int          m_BootFlags_status;
-		unsigned int m_Reserved5;
-		float        m_Reserved6;
 		float        m_FPS_status; // NOTE: If move into ipc_send_gui_update will spam GUI's message system (one message per frame)
 		bool         m_Krnl_Log_enabled; // Is require in order to preserve previous set for support multi-xbe.
 		bool         m_bDebugging;
@@ -293,21 +361,17 @@ class EmuShared : public Mutex
 		bool         m_bEmulating_status;
 #ifndef CXBX_LOADER // Temporary usage for cxbx.exe's emu
 		unsigned int m_PreviousMmLayout;
-		int          m_Reserved7[3];
 #else
-		int          m_Reserved7[4];
+		unsigned int m_Reserved;
 #endif
 		bool         m_bFirstLaunch;
 		bool         m_bClipCursor;
-		bool         m_bReserved3;
-		bool         m_bReserved4;
 		unsigned int m_dwKrnlProcID; // Only used for kernel mode level.
-		int          m_DeviceType[4];
-		char         m_DeviceControlNames[4][XBOX_CTRL_NUM_BUTTONS][30]; // macro should be num of buttons of dev with highest num buttons
-		char         m_DeviceName[4][50];
-		long         m_MoAxisRange;
-		long         m_MoWheelRange;
-		int          m_Reserved99[26]; // Reserve space
+		int          m_DeviceType[XBOX_NUM_PORTS];
+		int          m_SlotDeviceType[XBOX_NUM_PORTS][XBOX_CTRL_NUM_SLOTS];
+		char         m_DeviceControlNames[XBOX_NUM_PORTS][HIGHEST_NUM_BUTTONS][HOST_BUTTON_NAME_LENGTH];
+		char         m_DeviceName[XBOX_NUM_PORTS][50];
+		char         m_TitleMountPath[xbox::max_path];
 
 		// Settings class in memory should not be tampered by third-party.
 		// Third-party program should only be allow to edit settings.ini file.
@@ -315,7 +379,12 @@ class EmuShared : public Mutex
 		Settings::s_video m_video;
 		Settings::s_audio m_audio;
 		Settings::s_network m_network;
+		Settings::s_input_general m_input_general;
 		Settings::s_hack m_hacks;
+		imgui_general m_imgui_general;
+		overlay_settings m_imgui_overlay_settings;
+		imgui_audio_windows m_imgui_audio_windows;
+		imgui_video_windows m_imgui_video_windows;
 };
 
 // ******************************************************************

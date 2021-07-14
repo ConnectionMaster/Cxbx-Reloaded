@@ -153,18 +153,16 @@ EmuShared::EmuShared()
 	m_bFirstLaunch = false;
 	m_bClipCursor = false;
 
-	// Reserve space (default to 0)
-	m_bReserved3 = false;
-	m_bReserved4 = false;
-	m_Reserved5 = 0;
-	m_Reserved6 = 0.0f;
-	std::memset(m_Reserved7, 0, sizeof(m_Reserved7));
-	std::memset(m_Reserved99, 0, sizeof(m_Reserved99));
 	std::memset(m_DeviceControlNames, '\0', sizeof(m_DeviceControlNames));
 	std::memset(m_DeviceName, '\0', sizeof(m_DeviceName));
+	m_imgui_general.ini_size = IMGUI_INI_SIZE_MAX;
+	std::memset(&m_imgui_general.ini_settings, 0, sizeof(m_imgui_general.ini_settings));
+	std::memset(&m_imgui_audio_windows, 0, sizeof(m_imgui_audio_windows));
+	std::memset(&m_imgui_video_windows, 0, sizeof(m_imgui_video_windows));
 	for (auto& i : m_DeviceType) {
 		i = to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID);
 	}
+    std::strncpy(m_git_version, GetGitVersionStr(), GetGitVersionLength());
 }
 
 // ******************************************************************

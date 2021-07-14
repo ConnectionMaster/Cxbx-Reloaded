@@ -37,7 +37,6 @@
 
 #define LOG_PREFIX CXBXR_MODULE::NV2A
 
-
 #include <core/kernel/exports/xboxkrnl.h> // For PKINTERRUPT, etc.
 
 #ifdef _MSC_VER                         // Check if MS Visual C compiler
@@ -53,7 +52,11 @@
 #include "core\kernel\init\CxbxKrnl.h" // For XBOX_MEMORY_SIZE, DWORD, etc
 #include "core\kernel\support\Emu.h"
 #include "core\kernel\exports\EmuKrnl.h"
+#include <backends/imgui_impl_win32.h>
+#include <backends/imgui_impl_opengl3.h>
+#include "core/common/video/RenderBase.hpp"
 #include "core\hle\Intercept.hpp"
+#include "common/win32/Threads.h"
 #include "Logging.h"
 
 #include "vga.h"
@@ -319,7 +322,7 @@ const NV2ABlockInfo* EmuNV2A_Block(xbox::addr_xt addr)
 // HACK: Until we implement VGA/proper interrupt generation
 // we simulate VBLANK by calling the interrupt at 60Hz
 std::thread vblank_thread;
-extern std::chrono::time_point<std::chrono::steady_clock, std::chrono::duration<double, std::nano>> GetNextVBlankTime();
+extern std::chrono::steady_clock::time_point GetNextVBlankTime();
 
 void _check_gl_reset()
 {
@@ -1099,7 +1102,7 @@ void NV2ADevice::UpdateHostDisplay(NV2AState *d)
 // TODO: Fix this properly
 static void nv2a_vblank_thread(NV2AState *d)
 {
-	SetThreadAffinityMask(GetCurrentThread(), g_CPUOthers);
+	g_AffinityPolicy->SetAffinityOther();
 	CxbxSetThreadName("Cxbx NV2A VBLANK");
 	auto nextVBlankTime = GetNextVBlankTime();
 
@@ -1156,6 +1159,9 @@ NV2ADevice::NV2ADevice()
 NV2ADevice::~NV2ADevice()
 {
 	Reset(); // TODO : Review this
+
+	g_renderbase->DeviceRelease();
+
 	delete m_nv2a_state;
 }
 

@@ -63,9 +63,6 @@ extern volatile bool g_bEmuSuspended;
 // global exception patching address
 extern void * funcExclude[2048];
 
-// partition emulation directory handles
-extern HANDLE g_hCurDir;
-extern CHAR  *g_strCurDrive;
 extern HWND   g_hEmuWindow;
 
 #define GET_FRONT_WINDOW_HANDLE ((CxbxKrnl_hEmuParent != nullptr) ? CxbxKrnl_hEmuParent : g_hEmuWindow)
@@ -73,9 +70,6 @@ extern HWND   g_hEmuWindow;
 // thread notification routine
 extern PVOID g_pfnThreadNotification[16];
 extern int g_iThreadNotificationCount;
-
-extern DWORD_PTR g_CPUXbox;
-extern DWORD_PTR g_CPUOthers;
 
 extern HANDLE g_CurrentProcessHandle; // Set in CxbxKrnlMain
 
@@ -89,8 +83,6 @@ typedef struct DUMMY_KERNEL
 	IMAGE_FILE_HEADER FileHeader;
 	IMAGE_SECTION_HEADER SectionHeader;
 } *PDUMMY_KERNEL;
-
-typedef WORD INDEX16;
 
 extern bool g_DisablePixelShaders;
 extern bool g_UseAllCores;

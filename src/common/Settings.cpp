@@ -33,8 +33,7 @@
 #include "core\kernel\support\Emu.h"
 #include "EmuShared.h"
 #include <filesystem>
-#include "common\input\InputManager.h"
-#include "common\input\layout_xbox_controller.h"
+#include "common\input\layout_xbox_device.h"
 #include <fstream>
 #include "common/util/cliConfig.hpp"
 
@@ -112,6 +111,12 @@ static struct {
 	const char* RenderResolution = "RenderResolution";
 } sect_video_keys;
 
+static const char* section_overlay = "overlay";
+static struct {
+	const char* FPS = "FPS";
+	const char* hle_lle_stats = "HLE/LLE Stats";
+} sect_overlay_keys;
+
 static const char* section_audio = "audio";
 static struct {
 	const char* adapter = "adapter";
@@ -131,6 +136,7 @@ static const char *section_input_general = "input-general";
 static struct {
 	const char *mo_axis_range = "MouseAxisRange";
 	const char *mo_wheel_range = "MouseWheelRange";
+	const char *ignore_kbmo_unfocus = "IgnoreKbMoUnfocus";
 } sect_input_general;
 
 static const char* section_controller_dinput = "controller-dinput";
@@ -141,6 +147,8 @@ static struct {
 	const char* type = "Type";
 	const char* device = "DeviceName";
 	const char* config = "ProfileName";
+	const char *top_slot = "TopSlot";
+	const char *bottom_slot = "BottomSlot";
 } sect_input_port;
 
 static const char* section_input_profiles = "input-profile-";
@@ -451,41 +459,65 @@ bool Settings::LoadConfig()
 
 	m_input_general.MoAxisRange = m_si.GetLongValue(section_input_general, sect_input_general.mo_axis_range, MO_AXIS_DEFAULT_RANGE);
 	m_input_general.MoWheelRange = m_si.GetLongValue(section_input_general, sect_input_general.mo_wheel_range, MO_WHEEL_DEFAULT_RANGE);
+	m_input_general.IgnoreKbMoUnfocus = m_si.GetBoolValue(section_input_general, sect_input_general.ignore_kbmo_unfocus, true);
 
 	// ==== Input General End ==============
 
 	// ==== Input Port Begin ====
 
 	for (int port_num = 0; port_num < 4; port_num++) {
-		std::string current_section = std::string(section_input_port) + std::to_string(port_num);
-		int ret = m_si.GetLongValue(current_section.c_str(), sect_input_port.type, -2);
-		if (ret == -2) {
+		for (int slot = 0; slot < XBOX_CTRL_NUM_SLOTS; ++slot) {
 			m_input_port[port_num].Type = to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID);
-			continue;
+			m_input_port[port_num].SlotType[slot] = to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID);
+
+			std::string current_section = std::string(section_input_port) + std::to_string(port_num);
+			int ret = m_si.GetLongValue(current_section.c_str(), sect_input_port.type, -2);
+			if (ret == -2) {
+				continue;
+			}
+			m_input_port[port_num].Type = ret;
+			m_input_port[port_num].DeviceName = m_si.GetValue(current_section.c_str(), sect_input_port.device);
+			m_input_port[port_num].ProfileName = TrimQuoteFromString(m_si.GetValue(current_section.c_str(), sect_input_port.config));
+			ret = m_si.GetLongValue(current_section.c_str(), slot == 0 ? sect_input_port.top_slot : sect_input_port.bottom_slot, -2);
+			if (ret == -2) {
+				continue;
+			}
+			m_input_port[port_num].SlotType[slot] = ret;
 		}
-		m_input_port[port_num].Type = ret;
-		m_input_port[port_num].DeviceName = m_si.GetValue(current_section.c_str(), sect_input_port.device);
-		m_input_port[port_num].ProfileName = TrimQuoteFromString(m_si.GetValue(current_section.c_str(), sect_input_port.config));
 	}
 
 	// ==== Input Port End ==============
 
 	// ==== Input Profile Begin ====
-	std::array<std::vector<std::string>, to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX)> control_names;
 
+	std::array<std::vector<std::string>, to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX)> control_names;
 	for (int device = 0; device < to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX); device++) {
 		if (dev_num_buttons[device] == 0) {
 			continue;
 		}
 
-		for (int i = 0; i < dev_num_buttons[device]; i++) {
-			char control_name[30];
-			std::sprintf(control_name, sect_input_profiles.control, button_xbox_ctrl_names[i][0]);
-			control_names[device].push_back(control_name);
+		auto &lambda = [&control_names, &device](int num_buttons, const char *const ctrl_names[]) {
+			for (int i = 0; i < num_buttons; i++) {
+				char control_name[XBOX_BUTTON_NAME_LENGTH];
+				std::sprintf(control_name, sect_input_profiles.control, ctrl_names[i]);
+				control_names[device].push_back(control_name);
+			}
+		};
+
+		switch (device)
+		{
+		case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE):
+		case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S):
+		case to_underlying(XBOX_INPUT_DEVICE::ARCADE_STICK):
+			lambda(dev_num_buttons[device], button_xbox_ctrl_names);
+			break;
+
+		case to_underlying(XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER):
+			lambda(dev_num_buttons[device], button_sbc_names);
+			break;
+
 		}
 	}
-
-	// TODO: add the control names of the other devices
 
 	index = 0;
 	while (true) {
@@ -506,6 +538,13 @@ bool Settings::LoadConfig()
 	}
 
 	// ==== Input Profile End ======
+
+	// ==== Overlay Begin =========
+
+	m_overlay.fps = m_si.GetBoolValue(section_overlay, sect_overlay_keys.FPS, false);
+	m_overlay.hle_lle_stats = m_si.GetBoolValue(section_overlay, sect_overlay_keys.hle_lle_stats, false);
+
+	// ==== Overlay End ===========
 
 	return true;
 }
@@ -572,6 +611,7 @@ bool Settings::Save(std::string file_path)
 	m_si.SetBoolValue(section_video, sect_video_keys.FullScreen, m_video.bFullScreen, nullptr, true);
 	m_si.SetBoolValue(section_video, sect_video_keys.MaintainAspect, m_video.bMaintainAspect, nullptr, true);
 	m_si.SetLongValue(section_video, sect_video_keys.RenderResolution, m_video.renderScaleFactor, nullptr, false, true);
+
 	// ==== Video End ===========
 
 	// ==== Audio Begin =========
@@ -601,6 +641,7 @@ bool Settings::Save(std::string file_path)
 
 	m_si.SetLongValue(section_input_general, sect_input_general.mo_axis_range, m_input_general.MoAxisRange, nullptr, false, true);
 	m_si.SetLongValue(section_input_general, sect_input_general.mo_wheel_range, m_input_general.MoWheelRange, nullptr, false, true);
+	m_si.SetBoolValue(section_input_general, sect_input_general.ignore_kbmo_unfocus, m_input_general.IgnoreKbMoUnfocus, nullptr, true);
 
 	// ==== Input General End =========
 
@@ -613,6 +654,8 @@ bool Settings::Save(std::string file_path)
 		m_si.SetLongValue(current_section.c_str(), sect_input_port.type, m_input_port[port_num].Type, nullptr, false, true);
 		m_si.SetValue(current_section.c_str(), sect_input_port.device, m_input_port[port_num].DeviceName.c_str(), nullptr, true);
 		m_si.SetValue(current_section.c_str(), sect_input_port.config, quoted_prf_str.c_str(), nullptr, true);
+		m_si.SetLongValue(current_section.c_str(), sect_input_port.top_slot, m_input_port[port_num].SlotType[SLOT_TOP], nullptr, false, true);
+		m_si.SetLongValue(current_section.c_str(), sect_input_port.bottom_slot, m_input_port[port_num].SlotType[SLOT_BOTTOM], nullptr, false, true);
 	}
 
 	// ==== Input Port End ==============
@@ -625,14 +668,28 @@ bool Settings::Save(std::string file_path)
 			continue;
 		}
 
-		for (int i = 0; i < dev_num_buttons[device]; i++) {
-			char control_name[30];
-			std::sprintf(control_name, sect_input_profiles.control, button_xbox_ctrl_names[i][0]);
-			control_names[device].push_back(control_name);
+		auto &lambda = [&control_names, &device](int num_buttons, const char *const ctrl_names[]) {
+			for (int i = 0; i < num_buttons; i++) {
+				char control_name[XBOX_BUTTON_NAME_LENGTH];
+				std::sprintf(control_name, sect_input_profiles.control, ctrl_names[i]);
+				control_names[device].push_back(control_name);
+			}
+		};
+
+		switch (device)
+		{
+		case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE):
+		case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S):
+		case to_underlying(XBOX_INPUT_DEVICE::ARCADE_STICK):
+			lambda(dev_num_buttons[device], button_xbox_ctrl_names);
+			break;
+
+		case to_underlying(XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER):
+			lambda(dev_num_buttons[device], button_sbc_names);
+			break;
+
 		}
 	}
-
-	// TODO: add the control names of the other devices
 
 	int profile_num = 0;
 	for (int i = 0; i < to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX); i++) {
@@ -668,6 +725,13 @@ bool Settings::Save(std::string file_path)
 	}
 
 	// ==== Input Profile End ======
+
+	// ==== Overlay Begin =======
+
+	m_si.SetBoolValue(section_overlay, sect_overlay_keys.FPS, m_overlay.fps, nullptr, true);
+	m_si.SetBoolValue(section_overlay, sect_overlay_keys.hle_lle_stats, m_overlay.hle_lle_stats, nullptr, true);
+
+	// ==== Overlay End =========
 
 	// ==== Hack Begin ==========
 
@@ -706,6 +770,7 @@ void Settings::SyncToEmulator()
 
 	// register Video settings
 	g_EmuShared->SetVideoSettings(&m_video);
+	g_EmuShared->SetOverlaySettings(&m_overlay);
 
 	// register Audio settings
 	g_EmuShared->SetAudioSettings(&m_audio);
@@ -713,9 +778,11 @@ void Settings::SyncToEmulator()
 	// register Network settings
 	g_EmuShared->SetNetworkSettings(&m_network);
 
-	// register input settings
+	// register xbox device input settings
 	for (int i = 0; i < 4; i++) {
 		g_EmuShared->SetInputDevTypeSettings(&m_input_port[i].Type, i);
+		g_EmuShared->SetInputSlotTypeSettings(&m_input_port[i].SlotType[SLOT_TOP], i, SLOT_TOP);
+		g_EmuShared->SetInputSlotTypeSettings(&m_input_port[i].SlotType[SLOT_BOTTOM], i, SLOT_BOTTOM);
 		if (m_input_port[i].Type != to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID)) {
 			g_EmuShared->SetInputDevNameSettings(m_input_port[i].DeviceName.c_str(), i);
 			auto it = std::find_if(m_input_profiles[m_input_port[i].Type].begin(),
@@ -726,23 +793,26 @@ void Settings::SyncToEmulator()
 					return false;
 				});
 			if (it != m_input_profiles[m_input_port[i].Type].end()) {
-				char controls_name[XBOX_CTRL_NUM_BUTTONS][30];
+				char controls_name[HIGHEST_NUM_BUTTONS][HOST_BUTTON_NAME_LENGTH];
 				for (int index = 0; index < dev_num_buttons[m_input_port[i].Type]; index++) {
 					strncpy(controls_name[index], it->ControlList[index].c_str(), 30);
 				}
-				g_EmuShared->SetInputBindingsSettings(controls_name, XBOX_CTRL_NUM_BUTTONS, i);
+				g_EmuShared->SetInputBindingsSettings(controls_name, dev_num_buttons[m_input_port[i].Type], i);
 			}
 		}
 	}
 
-	g_EmuShared->SetInputMoAxisSettings(m_input_general.MoAxisRange);
-	g_EmuShared->SetInputMoWheelSettings(m_input_general.MoWheelRange);
+	// register Input general settings
+	g_EmuShared->SetInputGeneralSettings(&m_input_general);
 
 	// register Hacks settings
 	g_EmuShared->SetHackSettings(&m_hacks);
 
 	// register data location setting
 	g_EmuShared->SetStorageLocation(GetDataLocation().c_str());
+
+	// reset title mount path
+	g_EmuShared->SetTitleMountPath("");
 }
 
 void verifyDebugFilePath(DebugMode& debug_mode, std::string& file_path)
@@ -921,12 +991,9 @@ void Settings::RemoveLegacyConfigs(unsigned int CurrentRevision)
 			std::string current_section = std::string(section_input_port) + std::to_string(port_num);
 			std::string device_name = m_si.GetValue(current_section.c_str(), sect_input_port.device, "");
 
-			// NOTE: with C++20, this can be simplified by simply calling device_name.ends_with()
-			if (device_name.length() >= kb_str.length()) {
-				if (device_name.compare(device_name.length() - kb_str.length(), kb_str.length(), kb_str) == 0) {
-					device_name += "Mouse";
-					m_si.SetValue(current_section.c_str(), sect_input_port.device, device_name.c_str(), nullptr, true);
-				}
+			if (StrEndsWith(device_name, kb_str)) {
+				device_name += "Mouse";
+				m_si.SetValue(current_section.c_str(), sect_input_port.device, device_name.c_str(), nullptr, true);
 			}
 		}
 

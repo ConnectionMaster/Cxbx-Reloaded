@@ -37,7 +37,7 @@
 #define DIRECTDRAW_VERSION 0x0700
 #include <ddraw.h>
 
-extern void LookupTrampolines();
+void LookupTrampolinesD3D();
 
 // initialize render window
 extern void CxbxInitWindow(bool bFullInit);
@@ -1306,7 +1306,7 @@ xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetRenderState_ShadowFunc)
 // ******************************************************************
 xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetTransform)
 (
-    D3DTRANSFORMSTATETYPE State,
+	xbox::X_D3DTRANSFORMSTATETYPE State,
     CONST D3DMATRIX      *pMatrix
 );
 
@@ -1317,7 +1317,7 @@ xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetTransform_0)();
 // ******************************************************************
 xbox::void_xt WINAPI EMUPATCH(D3DDevice_MultiplyTransform)
 (
-	D3DTRANSFORMSTATETYPE State,
+	xbox::X_D3DTRANSFORMSTATETYPE State,
 	CONST D3DMATRIX      *pMatrix
 );
 
@@ -1369,6 +1369,8 @@ xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetStreamSource)
     X_D3DVertexBuffer  *pStreamData,
     uint_xt                Stride
 );
+
+xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetStreamSource_0__LTCG_eax_StreamNumber_edi_pStreamData_ebx_Stride)();
 
 xbox::void_xt WINAPI EMUPATCH(D3DDevice_SetStreamSource_4)
 (

@@ -186,6 +186,16 @@ uint32_t XboxRenderStateConverter::GetXboxRenderState(uint32_t State)
     return D3D__RenderState[XboxRenderStateOffsets[State]];
 }
 
+float XboxRenderStateConverter::GetXboxRenderStateAsFloat(uint32_t State)
+{
+    if (!XboxRenderStateExists(State)) {
+        EmuLog(LOG_LEVEL::WARNING, "Attempt to read a Renderstate (%s) that does not exist in the current D3D8 XDK Version (%d)", GetDxbxRenderStateInfo(State).S, g_LibVersion_D3D8);
+        return 0;
+    }
+
+    return *reinterpret_cast<float*>(&(D3D__RenderState[XboxRenderStateOffsets[State]]));
+}
+
 void XboxRenderStateConverter::StoreInitialValues()
 {
     for (unsigned int RenderState = xbox::X_D3DRS_FIRST; RenderState <= xbox::X_D3DRS_LAST; RenderState++) {
@@ -396,14 +406,13 @@ void XboxRenderStateConverter::ApplyComplexRenderState(uint32_t State, uint32_t 
 
 	switch (State) {
         case xbox::X_D3DRS_VERTEXBLEND:
-            // convert from Xbox direct3d to PC direct3d enumeration
-            if (Value <= 1) {
-                Value = Value;
-            } else if (Value == 3) {
-                Value = 2;
-            } else if (Value == 5) {
-                Value = 3;
-            } else {
+            // convert from Xbox X_D3DVERTEXBLENDFLAGS to PC D3DVERTEXBLENDFLAGS enumeration
+            switch (Value) {
+            case xbox::X_D3DVBF_DISABLE: Value = D3DVBF_DISABLE; break;
+            case xbox::X_D3DVBF_1WEIGHTS: Value = D3DVBF_1WEIGHTS; break;
+            case xbox::X_D3DVBF_2WEIGHTS: Value = D3DVBF_2WEIGHTS; break;
+            case xbox::X_D3DVBF_3WEIGHTS: Value = D3DVBF_3WEIGHTS; break;
+            default:
                 LOG_TEST_CASE("Unsupported D3DVERTEXBLENDFLAGS (%d)");
                 return;
             }
@@ -436,11 +445,13 @@ void XboxRenderStateConverter::ApplyComplexRenderState(uint32_t State, uint32_t 
         case xbox::X_D3DRS_NORMALIZENORMALS:
         case xbox::X_D3DRS_ZENABLE:
         case xbox::X_D3DRS_STENCILENABLE:
-        case xbox::X_D3DRS_STENCILFAIL:
         case xbox::X_D3DRS_TEXTUREFACTOR:
         case xbox::X_D3DRS_EDGEANTIALIAS:
         case xbox::X_D3DRS_MULTISAMPLEANTIALIAS:
         case xbox::X_D3DRS_MULTISAMPLEMASK:
+            break;
+        case xbox::X_D3DRS_STENCILFAIL:
+            Value = EmuXB2PC_D3DSTENCILOP(Value);
             break;
         case xbox::X_D3DRS_MULTISAMPLETYPE:
             SetXboxMultiSampleType(Value);

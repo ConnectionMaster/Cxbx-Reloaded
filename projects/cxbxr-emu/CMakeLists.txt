@@ -68,6 +68,10 @@ file (GLOB RESOURCES
  "${CXBXR_ROOT_DIR}/README.md"
 )
 
+source_group(TREE ${CXBXR_ROOT_DIR}/import PREFIX import FILES
+ ${CXBXR_HEADER_EMU_IMPORT}
+)
+
 source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX header FILES
  ${CXBXR_HEADER_GUIv1}
  ${CXBXR_HEADER_COMMON}
@@ -75,7 +79,11 @@ source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX header FILES
  "${CXBXR_ROOT_DIR}/src/emulator/targetver.h"
 )
 
-source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX source FILES 
+source_group(TREE ${CXBXR_ROOT_DIR}/import PREFIX import FILES
+ ${CXBXR_SOURCE_EMU_IMPORT}
+)
+
+source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX source FILES
  ${CXBXR_SOURCE_GUIv1}
  ${CXBXR_SOURCE_COMMON}
  ${CXBXR_SOURCE_EMU}
@@ -87,9 +95,11 @@ source_group(TREE ${CXBXR_ROOT_DIR} FILES ${RESOURCES})
 
 add_library(cxbxr-emu SHARED ${RESOURCES}
  ${CXBXR_HEADER_COMMON}
+ ${CXBXR_HEADER_EMU_IMPORT}
  ${CXBXR_HEADER_EMU}
  "${CXBXR_ROOT_DIR}/src/emulator/targetver.h"
  ${CXBXR_SOURCE_COMMON}
+ ${CXBXR_SOURCE_EMU_IMPORT}
  ${CXBXR_SOURCE_EMU}
  ${CXBXR_GIT_VERSION_H}
  "${CXBXR_ROOT_DIR}/src/emulator/cxbxr-emu.cpp"
@@ -101,30 +111,30 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 
  set_target_properties(cxbxr-emu PROPERTIES
   LINK_FLAGS "
-  /INCREMENTAL:NO
-  /LARGEADDRESSAWARE
-  /SAFESEH:NO
-  /STACK:65536,65536
-  /NODEFAULTLIB:libcmt
-  /DELAYLOAD:wpcap.dll
+  /INCREMENTAL:NO \
+  /LARGEADDRESSAWARE \
+  /SAFESEH:NO \
+  /STACK:65536,65536 \
+  /NODEFAULTLIB:libcmt \
+  /DELAYLOAD:wpcap.dll \
   "
   LINK_FLAGS_RELEASE "
-  /LTCG
-  /DEBUG
+  /LTCG \
+  /DEBUG \
   "
  )
 
  # Set optimization options for release build
- set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}
-  /Zi
-  /Ob2
-  /Oi
-  /Ot
-  /GL
-
-  /GS-
-  /Gy
-  /Qpar
+ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} \
+  /Zi \
+  /Ob2 \
+  /Oi \
+  /Ot \
+  /GL \
+  \
+  /GS- \
+  /Gy \
+  /Qpar \
   "
  )
 endif()
@@ -134,6 +144,7 @@ set(WINS_LIB
  legacy_stdio_definitions
  d3d9
  d3dcompiler
+ delayimp
  dinput8
  dxguid
  odbc32
@@ -157,8 +168,22 @@ target_link_libraries(cxbxr-emu
  subhook
  libtomcrypt
  SDL2
+ imgui
 
  ${WINS_LIB}
 )
 
+install(TARGETS ${PROJECT_NAME}
+  RUNTIME DESTINATION bin
+)
+
 add_dependencies(cxbxr-emu cxbxr-ldr misc-batch)
+
+# Try to stop cmake from building hlsl files
+# Which are all currently loaded at runtime only
+set_source_files_properties(
+  ${CXBXR_HEADER_HLSL}
+  PROPERTIES
+  HEADER_FILE_ONLY TRUE
+  VS_TOOL_OVERRIDE "None"
+)

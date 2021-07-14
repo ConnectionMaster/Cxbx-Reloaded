@@ -142,10 +142,10 @@ XBSYSAPI EXPORTNUM(187) xbox::ntstatus_xt NTAPI xbox::NtClose
 
 	NTSTATUS ret = xbox::status_success;
 
-	if (IsEmuHandle(Handle))
+	if (EmuHandle::IsEmuHandle(Handle))
 	{
 		// delete 'special' handles
-		EmuHandle *iEmuHandle = HandleToEmuHandle(Handle);
+		auto iEmuHandle = (EmuHandle*)Handle;
 		ret = iEmuHandle->NtClose();
 
 		LOG_UNIMPLEMENTED(); // TODO : Base this on the Ob* functions
@@ -233,24 +233,22 @@ XBSYSAPI EXPORTNUM(189) xbox::ntstatus_xt NTAPI xbox::NtCreateEvent
 		LOG_FUNC_ARG(InitialState)
 		LOG_FUNC_END;
 
-/*
-	NTSTATUS Status;
-
+	ntstatus_xt result;
+#ifdef CXBX_KERNEL_REWORK_ENABLED
 	if ((EventType != NotificationEvent) && (EventType != SynchronizationEvent)) {
-		Status = STATUS_INVALID_PARAMETER;
+		result = STATUS_INVALID_PARAMETER;
 	}
 	else {
 		PKEVENT Event;
 
-		Status = ObCreateObject(&ExEventObjectType, ObjectAttributes, sizeof(KEVENT), (PVOID *)&Event);
-		if (nt_success(Status)) {
+		result = ObCreateObject(&ExEventObjectType, ObjectAttributes, sizeof(KEVENT), (PVOID *)&Event);
+		if (nt_success(result)) {
 			KeInitializeEvent(Event, EventType, InitialState);
-			Status = ObInsertObject(Event, ObjectAttributes, 0, EventHandle);
+			result = ObInsertObject(Event, ObjectAttributes, 0, EventHandle);
 		}
 	}
+#else
 
-	RETURN(Status);
-*/
 	LOG_INCOMPLETE(); // TODO : Verify arguments, use ObCreateObject, KeInitializeEvent and ObInsertObject instead of this:
 
 	// initialize object attributes
@@ -261,7 +259,7 @@ XBSYSAPI EXPORTNUM(189) xbox::ntstatus_xt NTAPI xbox::NtCreateEvent
 	const ACCESS_MASK DesiredAccess = EVENT_ALL_ACCESS;
 
 	// redirect to Win2k/XP
-	NTSTATUS ret = NtDll::NtCreateEvent(
+	result = NtDll::NtCreateEvent(
 		/*OUT*/EventHandle,
 		DesiredAccess,
 		nativeObjectAttributes.NtObjAttrPtr,
@@ -271,28 +269,29 @@ XBSYSAPI EXPORTNUM(189) xbox::ntstatus_xt NTAPI xbox::NtCreateEvent
 	// TODO : Instead of the above, we should consider using the Ke*Event APIs, but
 	// that would require us to create the event's kernel object with the Ob* api's too!
 
-	if (FAILED(ret))
+	if (FAILED(result))
 	{
-		EmuLog(LOG_LEVEL::WARNING, "Trying fallback (without object attributes)...\nError code 0x%X", ret);
+		EmuLog(LOG_LEVEL::WARNING, "Trying fallback (without object attributes)...\nError code 0x%X", result);
 
 		// If it fails, try again but without the object attributes stucture
 		// This fixes Panzer Dragoon games on non-Vista OSes.
-		ret = NtDll::NtCreateEvent(
+		result = NtDll::NtCreateEvent(
 			/*OUT*/EventHandle,
 			DesiredAccess,
 			/*nativeObjectAttributes.NtObjAttrPtr*/ NULL,
 			(NtDll::EVENT_TYPE)EventType,
 			InitialState);
 
-		if(FAILED(ret))
+		if(FAILED(result))
 			EmuLog(LOG_LEVEL::WARNING, "NtCreateEvent Failed!");
 		else
 			EmuLog(LOG_LEVEL::DEBUG, "NtCreateEvent EventHandle = 0x%.8X", *EventHandle);
 	}
 	else
 		EmuLog(LOG_LEVEL::DEBUG, "NtCreateEvent EventHandle = 0x%.8X", *EventHandle);
+#endif
 
-	RETURN(ret);
+	RETURN(result);
 }
 
 // ******************************************************************
@@ -620,8 +619,7 @@ XBSYSAPI EXPORTNUM(196) xbox::ntstatus_xt NTAPI xbox::NtDeviceIoControlFile
 
 	switch (IoControlCode)
 	{
-	case 0x4D014: // IOCTL_SCSI_PASS_THROUGH_DIRECT
-	{
+	case 0x4D014: { // IOCTL_SCSI_PASS_THROUGH_DIRECT
 		PSCSI_PASS_THROUGH_DIRECT PassThrough = (PSCSI_PASS_THROUGH_DIRECT)InputBuffer;
 		PDVDX2_AUTHENTICATION Authentication = (PDVDX2_AUTHENTICATION)PassThrough->DataBuffer;
 
@@ -629,34 +627,63 @@ XBSYSAPI EXPORTNUM(196) xbox::ntstatus_xt NTAPI xbox::NtDeviceIoControlFile
 		Authentication->AuthenticationPage.CDFValid = 1;
 		Authentication->AuthenticationPage.PartitionArea = 1;
 		Authentication->AuthenticationPage.Authentication = 1;
-		break;
 	}
-	case 0x70000: // IOCTL_DISK_GET_DRIVE_GEOMETRY
-	{
+	break;
+
+	case 0x70000: { // IOCTL_DISK_GET_DRIVE_GEOMETRY
 		PDISK_GEOMETRY DiskGeometry = (PDISK_GEOMETRY)OutputBuffer;
 
-		DiskGeometry->MediaType = FixedMedia;
-		DiskGeometry->TracksPerCylinder = 1;
-		DiskGeometry->SectorsPerTrack = 1;
-		DiskGeometry->BytesPerSector = 512;
-		DiskGeometry->Cylinders.QuadPart = 0x1400000;	// Around 10GB, size of stock xbox HDD
-		break;
+		DeviceType type = CxbxrGetDeviceTypeFromHandle(FileHandle);
+		if (type == DeviceType::Harddisk0) {
+			DiskGeometry->MediaType = FixedMedia;
+			DiskGeometry->TracksPerCylinder = 1;
+			DiskGeometry->SectorsPerTrack = 1;
+			DiskGeometry->BytesPerSector = 512;
+			DiskGeometry->Cylinders.QuadPart = 0x1400000;	// 10GB, size of stock xbox HDD
+		}
+		else if (type == DeviceType::MU) {
+			DiskGeometry->MediaType = FixedMedia;
+			DiskGeometry->TracksPerCylinder = 1;
+			DiskGeometry->SectorsPerTrack = 1;
+			DiskGeometry->BytesPerSector = 512;
+			DiskGeometry->Cylinders.QuadPart = 0x4000;	// 8MB, Microsoft original MUs
+		}
+		else {
+			EmuLog(LOG_LEVEL::WARNING, "%s: Unrecongnized handle 0x%X with IoControlCode IOCTL_DISK_GET_DRIVE_GEOMETRY.", __func__, FileHandle);
+			ret = status_invalid_handle;
+		}
 	}
-	case 0x74004: // IOCTL_DISK_GET_PARTITION_INFO 
-	{
+	break;
+
+	case 0x74004: { // IOCTL_DISK_GET_PARTITION_INFO
 		PPARTITION_INFORMATION partitioninfo = (PPARTITION_INFORMATION)OutputBuffer;
 
-		XboxPartitionTable partitionTable = CxbxGetPartitionTable();
-		int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
-		
-		// Now we read from the partition table, to fill in the partitionInfo struct
-		partitioninfo->PartitionNumber = partitionNumber;
-		partitioninfo->StartingOffset.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBAStart * 512;
-		partitioninfo->PartitionLength.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize * 512;
-		partitioninfo->HiddenSectors = partitionTable.TableEntries[partitionNumber - 1].Reserved;
-		partitioninfo->RecognizedPartition = true;
-		break;
+		DeviceType type = CxbxrGetDeviceTypeFromHandle(FileHandle);
+		if (type == DeviceType::Harddisk0) {
+			XboxPartitionTable partitionTable = CxbxGetPartitionTable();
+			int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
+
+			// Now we read from the partition table, to fill in the partitionInfo struct
+			partitioninfo->PartitionNumber = partitionNumber;
+			partitioninfo->StartingOffset.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBAStart * 512;
+			partitioninfo->PartitionLength.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize * 512;
+			partitioninfo->HiddenSectors = partitionTable.TableEntries[partitionNumber - 1].Reserved;
+			partitioninfo->RecognizedPartition = true;
+		}
+		else if (type == DeviceType::MU) {
+			partitioninfo->PartitionNumber = 0;
+			partitioninfo->StartingOffset.QuadPart = 0; // FIXME: where does the MU partition start?
+			partitioninfo->PartitionLength.QuadPart = 16384; // 8MB
+			partitioninfo->HiddenSectors = 0;
+			partitioninfo->RecognizedPartition = true;
+		}
+		else {
+			EmuLog(LOG_LEVEL::WARNING, "%s: Unrecongnized handle 0x%X with IoControlCode IOCTL_DISK_GET_PARTITION_INFO.", __func__, FileHandle);
+			ret = status_invalid_handle;
+		}
 	}
+	break;
+
 	default:
 		LOG_UNIMPLEMENTED();
 	}
@@ -680,25 +707,26 @@ XBSYSAPI EXPORTNUM(197) xbox::ntstatus_xt NTAPI xbox::NtDuplicateObject
 		LOG_FUNC_ARG(Options)
 		LOG_FUNC_END;
 
-	NTSTATUS ret = xbox::status_success;
+	NTSTATUS result = xbox::status_success;
 
-	if (IsEmuHandle(SourceHandle)) {
-		EmuHandle* iEmuHandle = HandleToEmuHandle(SourceHandle);
-		ret = iEmuHandle->NtDuplicateObject(TargetHandle, Options);
-/*
-		PVOID Object;
+#ifdef CXBX_KERNEL_REWORK_ENABLED
+	PVOID Object;
 
-		ret = ObReferenceObjectByHandle(SourceHandle, /*ObjectType=* /NULL, &Object);
-		if (nt_success(ret)) {
-			if (ObpIsFlagSet(Options, DUPLICATE_CLOSE_SOURCE))
-				NtClose(SourceHandle);
+	result = ObReferenceObjectByHandle(SourceHandle, /*ObjectType=*/nullptr, &Object);
+	if (nt_success(result)) {
+		if (ObpIsFlagSet(Options, DUPLICATE_CLOSE_SOURCE))
+			NtClose(SourceHandle);
 
-			status = ObOpenObjectByPointer(Object, OBJECT_TO_OBJECT_HEADER(Object)->Type, /*OUT* /TargetHandle);
-			ObDereferenceObject(Object);
-		}
-		else
-			*TargetHandle = NULL;
-*/
+		result = ObOpenObjectByPointer(Object, OBJECT_TO_OBJECT_HEADER(Object)->Type, /*OUT*/TargetHandle);
+		ObfDereferenceObject(Object);
+	}
+	else
+		*TargetHandle = NULL;
+#else
+
+	if (EmuHandle::IsEmuHandle(SourceHandle)) {
+		auto iEmuHandle = (EmuHandle*)SourceHandle;
+		result = iEmuHandle->NtDuplicateObject(TargetHandle, Options);
 	}
 	else
 	{
@@ -708,7 +736,7 @@ XBSYSAPI EXPORTNUM(197) xbox::ntstatus_xt NTAPI xbox::NtDuplicateObject
 		Options |= (DUPLICATE_SAME_ATTRIBUTES | DUPLICATE_SAME_ACCESS);
 
 		// redirect to Win2k/XP
-		ret = NtDll::NtDuplicateObject(
+		result = NtDll::NtDuplicateObject(
 			/*SourceProcessHandle=*/g_CurrentProcessHandle,
 			SourceHandle,
 			/*TargetProcessHandle=*/g_CurrentProcessHandle,
@@ -718,10 +746,11 @@ XBSYSAPI EXPORTNUM(197) xbox::ntstatus_xt NTAPI xbox::NtDuplicateObject
 			Options);
 	}
 
-	if (ret != xbox::status_success)
+	if (result != xbox::status_success)
 		EmuLog(LOG_LEVEL::WARNING, "Object was not duplicated!");
+#endif
 
-	RETURN(ret);
+	RETURN(result);
 }
 
 // ******************************************************************
@@ -739,7 +768,7 @@ XBSYSAPI EXPORTNUM(198) xbox::ntstatus_xt NTAPI xbox::NtFlushBuffersFile
 		LOG_FUNC_END;
 	NTSTATUS ret = xbox::status_success;
 	
-	if (IsEmuHandle(FileHandle)) 
+	if (EmuHandle::IsEmuHandle(FileHandle))
 		LOG_UNIMPLEMENTED();
 	else
 		ret = NtDll::NtFlushBuffersFile(FileHandle, (NtDll::IO_STATUS_BLOCK*)IoStatusBlock);
@@ -801,19 +830,56 @@ XBSYSAPI EXPORTNUM(200) xbox::ntstatus_xt NTAPI xbox::NtFsControlFile
 		LOG_FUNC_ARG(OutputBufferLength)
 		LOG_FUNC_END;
 
-	NTSTATUS ret = STATUS_INVALID_PARAMETER;
+	ntstatus_xt ret = STATUS_INVALID_PARAMETER;
 
-	switch (FsControlCode) {
-		case 0x00090020: // FSCTL_DISMOUNT_VOLUME 
-			int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
-			if (partitionNumber > 0) {
-				CxbxFormatPartitionByHandle(FileHandle);
-				ret = xbox::status_success;
-			}
-			break;
+	switch (FsControlCode)
+	{
+	case fsctl_dismount_volume: {
+		// HACK: this should just free the resources assocoated with the volume, it should not reformat it
+		int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
+		if (partitionNumber > 0) {
+			CxbxFormatPartitionByHandle(FileHandle);
+			ret = xbox::status_success;
+		}
+	}
+	break;
+
+	case fsctl_read_fatx_metadata: {
+		const std::wstring path = CxbxGetFinalPathNameByHandle(FileHandle);
+		size_t pos = path.rfind(L"\\EmuMu");
+		if (pos != std::string::npos && path[pos + 6] == '\\') {
+			// Ensure that InputBuffer is indeed what we think it is
+			pfatx_volume_metadata volume = static_cast<pfatx_volume_metadata>(InputBuffer);
+			assert(InputBufferLength == sizeof(fatx_volume_metadata));
+			g_io_mu_metadata->read(path[pos + 7], volume->offset, static_cast<char *>(volume->buffer), volume->length);
+			ret = xbox::status_success;
+		}
+		else {
+			ret = status_invalid_handle;
+		}
+	}
+	break;
+
+	case fsctl_write_fatx_metadata: {
+		const std::wstring path = CxbxGetFinalPathNameByHandle(FileHandle);
+		size_t pos = path.rfind(L"\\EmuMu");
+		if (pos != std::string::npos && path[pos + 6] == '\\') {
+			// Ensure that InputBuffer is indeed what we think it is
+			pfatx_volume_metadata volume = static_cast<pfatx_volume_metadata>(InputBuffer);
+			assert(InputBufferLength == sizeof(fatx_volume_metadata));
+			g_io_mu_metadata->write(path[pos + 7], volume->offset, static_cast<const char *>(volume->buffer), volume->length);
+			ret = xbox::status_success;
+		}
+		else {
+			ret = status_invalid_handle;
+		}
+	}
+	break;
+
 	}
 
-	LOG_UNIMPLEMENTED();
+	LOG_INCOMPLETE();
+
 	RETURN(ret);
 }
 
@@ -873,33 +939,9 @@ XBSYSAPI EXPORTNUM(203) xbox::ntstatus_xt NTAPI xbox::NtOpenSymbolicLinkObject
 	IN POBJECT_ATTRIBUTES ObjectAttributes
 )
 {
-	/* TODO :
 	LOG_FORWARD("ObOpenObjectByName");
 
 	return ObOpenObjectByName(ObjectAttributes, &ObSymbolicLinkObjectType, NULL, LinkHandle);
-	*/
-	LOG_FUNC_BEGIN
-		LOG_FUNC_ARG_OUT(LinkHandle)
-		LOG_FUNC_ARG(ObjectAttributes)
-		LOG_FUNC_END;
-
-	NTSTATUS ret = STATUS_OBJECT_PATH_NOT_FOUND;
-	EmuNtSymbolicLinkObject* symbolicLinkObject =
-		FindNtSymbolicLinkObjectByName(PSTRING_to_string(ObjectAttributes->ObjectName));
-
-	if (symbolicLinkObject != NULL)
-	{
-		// Return a new handle (which is an EmuHandle, actually) :
-		*LinkHandle = symbolicLinkObject->NewHandle();
-		ret = xbox::status_success;
-	}
-
-	if (ret != xbox::status_success)
-		EmuLog(LOG_LEVEL::WARNING, "NtOpenSymbolicLinkObject failed! (%s)", NtStatusToString(ret));
-	else
-		EmuLog(LOG_LEVEL::DEBUG, "NtOpenSymbolicLinkObject LinkHandle^ = 0x%.8X", *LinkHandle);
-
-	RETURN(ret);
 }
 
 // ******************************************************************
@@ -1371,13 +1413,16 @@ XBSYSAPI EXPORTNUM(215) xbox::ntstatus_xt NTAPI xbox::NtQuerySymbolicLinkObject
 		LOG_FUNC_ARG_OUT(ReturnedLength)
 		LOG_FUNC_END;
 
-	NTSTATUS ret = 0;
+	NTSTATUS ret = STATUS_INVALID_HANDLE;
 	EmuNtSymbolicLinkObject* symbolicLinkObject = NULL;
 
-	// Check that we actually got an EmuHandle :
-	ret = STATUS_INVALID_HANDLE;
+	// We expect LinkHandle to always be an EmuHandle
+	if (!EmuHandle::IsEmuHandle(LinkHandle)) {
+		LOG_UNIMPLEMENTED();
+		return ret;
+	}
 
-	EmuHandle* iEmuHandle = HandleToEmuHandle(LinkHandle);
+	auto iEmuHandle = (EmuHandle*)LinkHandle;
 	// Retrieve the NtSymbolicLinkObject and populate the output arguments :
 	ret = xbox::status_success;
 	symbolicLinkObject = (EmuNtSymbolicLinkObject*)iEmuHandle->NtObject;
@@ -1469,8 +1514,8 @@ XBSYSAPI EXPORTNUM(217) xbox::ntstatus_xt NTAPI xbox::NtQueryVirtualMemory
 	}
 
 	#if 0
-	if (FAILED(ret)) {
-		EmuLog(LOG_LEVEL::WARNING, "NtQueryVirtualMemory failed (%s)!", NtStatusToString(ret));
+	if (FAILED(result)) {
+		EmuLog(LOG_LEVEL::WARNING, "NtQueryVirtualMemory failed (%s)!", NtStatusToString(result));
 
 		// Bugfix for "Forza Motorsport", which iterates over 2 Gb of memory in 64kb chunks,
 		// but fails on this last query. It's not done though, as after this Forza tries to
@@ -1487,7 +1532,7 @@ XBSYSAPI EXPORTNUM(217) xbox::ntstatus_xt NTAPI xbox::NtQueryVirtualMemory
 			Buffer->Protect = PAGE_READONLY;            // One of the flags listed for the AllocationProtect member is specified
 			Buffer->Type = 262144;                      // Specifies the type of pages in the region. (MEM_IMAGE, MEM_MAPPED or MEM_PRIVATE)
 
-			ret = xbox::status_success;
+			result = xbox::status_success;
 
 			EmuLog(LOG_LEVEL::DEBUG, "NtQueryVirtualMemory: Applied fix for Forza Motorsport!");
 		}
@@ -1519,27 +1564,56 @@ XBSYSAPI EXPORTNUM(218) xbox::ntstatus_xt NTAPI xbox::NtQueryVolumeInformationFi
 
 	// FileFsSizeInformation is a special case that should read from our emulated partition table
 	if ((DWORD)FileInformationClass == FileFsSizeInformation) {
+		ntstatus_xt status;
 		PFILE_FS_SIZE_INFORMATION XboxSizeInfo = (PFILE_FS_SIZE_INFORMATION)FileInformation;
 
-		XboxPartitionTable partitionTable = CxbxGetPartitionTable();
-		int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
-		FATX_SUPERBLOCK superBlock = CxbxGetFatXSuperBlock(partitionNumber);
+		// This might access the HDD, a MU or the DVD drive, so we need to figure out the correct one first
+		DeviceType type = CxbxrGetDeviceTypeFromHandle(FileHandle);
+		if (type == DeviceType::Harddisk0) {
 
-		XboxSizeInfo->BytesPerSector = 512;
+			XboxPartitionTable partitionTable = CxbxGetPartitionTable();
+			int partitionNumber = CxbxGetPartitionNumberFromHandle(FileHandle);
+			FATX_SUPERBLOCK superBlock = CxbxGetFatXSuperBlock(partitionNumber);
 
-		// In some cases, the emulated partition hasn't been formatted yet, as these are forwarded to a real folder, this doesn't actually matter.
-		// We just pretend they are valid by defaulting the SectorsPerAllocationUnit value to the most common for system partitions
-		XboxSizeInfo->SectorsPerAllocationUnit = 32;
+			XboxSizeInfo->BytesPerSector = 512;
 
-		// If there is a valid cluster size, we calculate SectorsPerAllocationUnit from that instead
-		if (superBlock.ClusterSize > 0) {
-			XboxSizeInfo->SectorsPerAllocationUnit = superBlock.ClusterSize;
+			// In some cases, the emulated partition hasn't been formatted yet, as these are forwarded to a real folder, this doesn't actually matter.
+			// We just pretend they are valid by defaulting the SectorsPerAllocationUnit value to the most common for system partitions
+			XboxSizeInfo->SectorsPerAllocationUnit = 32;
+
+			// If there is a valid cluster size, we calculate SectorsPerAllocationUnit from that instead
+			if (superBlock.ClusterSize > 0) {
+				XboxSizeInfo->SectorsPerAllocationUnit = superBlock.ClusterSize;
+			}
+
+			XboxSizeInfo->TotalAllocationUnits.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize / XboxSizeInfo->SectorsPerAllocationUnit;
+			XboxSizeInfo->AvailableAllocationUnits.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize / XboxSizeInfo->SectorsPerAllocationUnit;
+
+			status = status_success;
+		}
+		else if (type == DeviceType::MU) {
+
+			XboxSizeInfo->BytesPerSector = 512;
+			XboxSizeInfo->SectorsPerAllocationUnit = 32;
+			XboxSizeInfo->TotalAllocationUnits.QuadPart = 512; // 8MB -> ((1024)^2 * 8) / (BytesPerSector * SectorsPerAllocationUnit)
+			XboxSizeInfo->AvailableAllocationUnits.QuadPart = 512; // constant, so there's always free space available to write stuff
+
+			status = status_success;
+		}
+		else if (type == DeviceType::Cdrom0) {
+
+			XboxSizeInfo->BytesPerSector = 2048;
+			XboxSizeInfo->SectorsPerAllocationUnit = 1;
+			XboxSizeInfo->TotalAllocationUnits.QuadPart = 3820880; // assuming DVD-9 (dual layer), redump reports a total size in bytes of 7825162240
+
+			status = status_success;
+		}
+		else {
+			EmuLog(LOG_LEVEL::WARNING, "%s: Unrecongnized handle 0x%X with class FileFsSizeInformation.", __func__, FileHandle);
+			status = status_invalid_handle;
 		}
 
-		XboxSizeInfo->TotalAllocationUnits.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize / XboxSizeInfo->SectorsPerAllocationUnit;
-		XboxSizeInfo->AvailableAllocationUnits.QuadPart = partitionTable.TableEntries[partitionNumber - 1].LBASize / XboxSizeInfo->SectorsPerAllocationUnit;
-
-		RETURN(xbox::status_success);
+		RETURN(status);
 	}
 
 	// Get the required size for the host buffer
@@ -1725,7 +1799,7 @@ XBSYSAPI EXPORTNUM(221) xbox::ntstatus_xt NTAPI xbox::NtReleaseMutant
 	if (FAILED(ret))
 		EmuLog(LOG_LEVEL::WARNING, "NtReleaseMutant Failed!");
 
-	RETURN(xbox::status_success); // TODO : RETURN(ret);
+	RETURN(xbox::status_success); // TODO : RETURN(result);
 }
 
 // ******************************************************************

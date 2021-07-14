@@ -25,11 +25,14 @@ endif()
 file (GLOB HEADERS
  "${CXBXR_ROOT_DIR}/src/common/AddressRanges.h"
  "${CXBXR_ROOT_DIR}/src/common/ReserveAddressRanges.h"
+ "${CXBXR_ROOT_DIR}/src/CxbxVersion.h"
+ "${CXBXR_ROOT_DIR}/src/version.h"
 )
 
 file (GLOB SOURCES
  "${CXBXR_ROOT_DIR}/src/common/AddressRanges.cpp"
  "${CXBXR_ROOT_DIR}/src/common/ReserveAddressRanges.cpp"
+ "${CXBXR_ROOT_DIR}/src/CxbxVersion.cpp"
  "${CXBXR_ROOT_DIR}/src/loader/cxbxr-ldr.cpp"
 )
 
@@ -44,19 +47,19 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 
  set_target_properties(cxbxr-ldr PROPERTIES
   LINK_FLAGS "
-  /LARGEADDRESSAWARE
-  /FIXED
-  /DYNAMICBASE:NO
-  /BASE:0x10000
-  /STACK:65536,65536
-  /NODEFAULTLIB
-  /ENTRY:rawMain
+  /LARGEADDRESSAWARE \
+  /FIXED \
+  /DYNAMICBASE:NO \
+  /BASE:0x10000 \
+  /STACK:65536,65536 \
+  /NODEFAULTLIB \
+  /ENTRY:rawMain \
   "
  )
 
  # Set optimization options for release build
- set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}
-  /Oi
+ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} \
+  /Oi \
   "
  )
 endif()
@@ -64,3 +67,9 @@ endif()
 target_link_libraries(cxbxr-ldr
  PUBLIC kernel32.lib
 )
+
+install(TARGETS ${PROJECT_NAME}
+  RUNTIME DESTINATION bin
+)
+
+add_dependencies(cxbxr-ldr misc-batch)

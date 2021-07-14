@@ -64,7 +64,7 @@ XBSYSAPI EXPORTNUM(327) xbox::ntstatus_xt NTAPI xbox::XeLoadSection
 		LOG_FUNC_ARG(Section)
 		LOG_FUNC_END;
 
-	NTSTATUS ret = xbox::status_success;
+	NTSTATUS ret = status_success;
 
 	void* sectionData = CxbxKrnl_Xbe->FindSection(Section);
 	if (sectionData != nullptr) {
@@ -97,6 +97,9 @@ XBSYSAPI EXPORTNUM(327) xbox::ntstatus_xt NTAPI xbox::XeLoadSection
 		// Increment the reference count
 		Section->SectionReferenceCount++;
 	}
+	else {
+		ret = status_invalid_handle;
+	}
 	
 	RETURN(ret);
 }
@@ -126,9 +129,8 @@ XBSYSAPI EXPORTNUM(328) xbox::ntstatus_xt NTAPI xbox::XeUnloadSection
 
 		// Free the section and the physical memory in use if necessary
 		if (Section->SectionReferenceCount == 0) {
-			memset(Section->VirtualAddress, 0, Section->VirtualSize);
-
 			// REMARK: the following can be tested with Broken Sword - The Sleeping Dragon, RalliSport Challenge, ...
+			// Test-case: Apex/Racing Evoluzione requires the memory NOT to be zeroed
 
 			VAddr BaseAddress = (VAddr)Section->VirtualAddress;
 			VAddr EndingAddress = (VAddr)Section->VirtualAddress + Section->VirtualSize;
@@ -191,8 +193,8 @@ xbox::uchar_xt xbox::XePublicKeyDataRetail[284] = {
 	0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00
 };
 
-// Chihiro Game Public Key
-xbox::uchar_xt xbox::XePublicKeyDataChihiroGame[284] = {
+// Debug Public Key
+xbox::uchar_xt xbox::XePublicKeyDataDebug[284] = {
 	0x52, 0x53, 0x41, 0x31, 0x08, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
 	0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x9B, 0x83, 0xD4, 0xD5,
 	0xDE, 0x16, 0x25, 0x8E, 0xE5, 0x15, 0xF2, 0x18, 0x9D, 0x19, 0x1C, 0xF8,
@@ -219,8 +221,8 @@ xbox::uchar_xt xbox::XePublicKeyDataChihiroGame[284] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-// Chihiro bootloader public key (Segaboot)
-xbox::uchar_xt xbox::XePublicKeyDataChihiroBoot[284] = {
+// Chihiro public key (Segaboot)
+xbox::uchar_xt xbox::XePublicKeyDataChihiro[284] = {
 	0x52, 0x53, 0x41, 0x31, 0x08, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
 	0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x6B, 0x7B, 0x38, 0x78,
 	0xE3, 0x16, 0x04, 0x88, 0x1D, 0xAF, 0x63, 0x4E, 0x23, 0xDB, 0x10, 0x14,

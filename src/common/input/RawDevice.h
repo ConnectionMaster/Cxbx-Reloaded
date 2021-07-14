@@ -1,3 +1,5 @@
+// This is an open source non-commercial project. Dear PVS-Studio, please check it.
+// PVS-Studio Static Code Analyzer for C, C++ and C#: http://www.viva64.com
 // ******************************************************************
 // *
 // *  This file is part of the Cxbx project.
@@ -17,20 +19,33 @@
 // *  If not, write to the Free Software Foundation, Inc.,
 // *  59 Temple Place - Suite 330, Bostom, MA 02111-1307, USA.
 // *
-// *  (c) 2002-2003 Aaron Robinson <caustik@caustik.com>
+// *  (c) 2021 ergo720
 // *
 // *  All rights reserved
 // *
 // ******************************************************************
-#ifndef DLGVIRTUALSBCFEEDBAC_H
-#define DLGVIRTUALSBCFEEDBAC_H
 
-#include <windows.h>
-namespace DlgVSBCFeedback
+#pragma once
+
+#include "Windows.h"
+#include <mutex>
+
+
+namespace RawInput
 {
-/*! show controller configuration dialog */
-extern int ShowVirtualSBCFeedback(HWND hwnd);
-extern void UpdateVirtualSBCFeedbackDlg(UCHAR * pXboxSBCFeedback);
-extern HWND GetDlgVirtualSBCFeedbackHandle(void);
+	typedef enum _INIT_STATUS : int
+	{
+		NOT_INIT = -2,
+		INIT_ERROR,
+		INIT_SUCCESS,
+	}
+	INIT_STATUS;
+
+	extern int InitStatus;
+	extern bool IgnoreHotplug;
+
+	// initialize RawInput
+	void Init(std::mutex &Mtx, bool is_gui, HWND hwnd);
+	// shutdown RawInput
+	void DeInit();
 }
-#endif

@@ -98,6 +98,36 @@ void ClearSymbolCache(const char sStorageLocation[MAX_PATH])
 	printf("Cleared HLE Cache\n");
 }
 
+unsigned ClearCachePartitions()
+{
+	const std::string &partition_path = g_Settings->GetDataLocation() + "\\EmuDisk\\Partition";
+	std::error_code err;
+	unsigned has_any_err = 0;
+
+	for (int partition_num = 3; partition_num < 6; ++partition_num) {
+		const std::string &partition = partition_path + std::to_string(partition_num);
+		for (const auto &directory_entry : std::filesystem::directory_iterator(partition, err)) {
+			if (err) {
+				has_any_err |= 1;
+			}
+			else {
+				std::filesystem::remove_all(directory_entry, err);
+				if (err) {
+					has_any_err |= 1;
+				}
+			}
+		}
+
+		const std::string &partition_bin = partition + ".bin";
+		std::filesystem::remove(partition_bin, err);
+		if (err) {
+			has_any_err |= 1;
+		}
+	}
+
+	return has_any_err;
+}
+
 void WndMain::InitializeSettings()
 {
 	g_Settings->Delete();
@@ -175,7 +205,7 @@ WndMain::WndMain(HINSTANCE x_hInstance) :
 	// initialize members
 	{
 		m_classname = "WndMain";
-		m_wndname   = "Cxbx-Reloaded " + std::string(CxbxVersionStr);
+		m_wndname   = "Cxbx-Reloaded " + std::string(CxbxrHashBuild);
 	}
 
 	// load configuration from settings file
@@ -330,6 +360,8 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 						DrawLedBitmap(hwnd, true);
 					}
 				}
+				break;
+
 				case WM_COMMAND:
 				{
 					switch (HIWORD(wParam)) {
@@ -357,6 +389,10 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 							g_EmuShared->SetIsReady(true);
 						}
 						break;
+
+						case ID_GUI_STATUS_OVERLAY:
+							g_EmuShared->GetOverlaySettings(&g_Settings->m_overlay);
+							break;
 					}
 				}
 				break;
@@ -598,19 +634,6 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			}
 			break;
 
-			case ID_FILE_SAVEXBEFILE:
-			{
-				if (m_XbeFilename[0] == '\0')
-					SaveXbeAs();
-				else
-					SaveXbe(m_XbeFilename);
-			}
-			break;
-
-			case ID_FILE_SAVEXBEFILEAS:
-				SaveXbeAs();
-				break;
-
 			case ID_FILE_RXBE_0:
 			case ID_FILE_RXBE_1:
 			case ID_FILE_RXBE_2:
@@ -848,56 +871,6 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			}
 			break;
 
-			case ID_EDIT_PATCH_ALLOW64MB:
-			{
-				m_bXbeChanged = true;
-
-				m_Xbe->m_Header.dwInitFlags.bLimit64MB = !m_Xbe->m_Header.dwInitFlags.bLimit64MB;
-
-				RefreshMenus();
-
-				if (m_Xbe->m_Header.dwInitFlags.bLimit64MB)
-					printf("WndMain: %s was patched to limit to 64MB of memory usage.\n", m_Xbe->m_szAsciiTitle);
-				else
-					printf("WndMain: %s was patched to allow >64MB of memory usage.\n", m_Xbe->m_szAsciiTitle);
-			}
-			break;
-
-			case ID_EDIT_PATCH_DEBUGMODE:
-			{
-				m_bXbeChanged = true;
-
-				// patch to/from debug mode
-				if ((m_Xbe->m_Header.dwEntryAddr ^ XOR_EP_RETAIL) > 0x01000000)
-				{
-					// we're in debug mode, so switch over to retail
-					uint32_t ep = m_Xbe->m_Header.dwEntryAddr ^ XOR_EP_RETAIL;            // decode from debug mode
-					uint32_t kt = m_Xbe->m_Header.dwKernelImageThunkAddr ^ XOR_KT_DEBUG;  // decode from debug mode
-
-					m_Xbe->m_Header.dwEntryAddr = ep ^ XOR_EP_DEBUG;                    // encode to retail mode
-					m_Xbe->m_Header.dwKernelImageThunkAddr = kt ^ XOR_KT_RETAIL;        // encode to retail mode
-				}
-				else
-				{
-					// we're in retail mode, so switch to debug
-					uint32_t ep = m_Xbe->m_Header.dwEntryAddr ^ XOR_EP_DEBUG;             // decode from retail mode
-					uint32_t kt = m_Xbe->m_Header.dwKernelImageThunkAddr ^ XOR_KT_RETAIL; // decode from retail mode
-
-					m_Xbe->m_Header.dwEntryAddr = ep ^ XOR_EP_RETAIL;                   // encode to debug mode
-					m_Xbe->m_Header.dwKernelImageThunkAddr = kt ^ XOR_KT_DEBUG;         // encode to debug mode
-				}
-
-				RefreshMenus();
-
-				bool res = (m_Xbe->m_Header.dwEntryAddr ^ XOR_EP_RETAIL) > 0x01000000;
-
-				if (res)
-					printf("WndMain: %s was converted to debug mode.\n", m_Xbe->m_szAsciiTitle);
-				else
-					printf("WndMain: %s was converted to retail mode.\n", m_Xbe->m_szAsciiTitle);
-			}
-			break;
-
 			case ID_EDIT_DUMPXBEINFOTO_FILE:
 			{
 				OPENFILENAME ofn = { 0 };
@@ -1084,6 +1057,22 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 				if (std::filesystem::remove(fullpath)) {
 					PopupInfo(m_hwnd, "This title's Symbol Cache entry has been cleared.");
+				}
+			}
+			break;
+
+			case ID_SETTINGS_CLEAR_PARTITIONS:
+			{
+				if (m_bIsStarted) {
+					PopupError(m_hwnd, "Cannot clear the cache partitions while a title is running.");
+				}
+				else {
+					if (ClearCachePartitions()) {
+						PopupError(m_hwnd, "An error has occurred while cleaning the cache partitions.");
+					}
+					else {
+						PopupInfo(m_hwnd, "Cleared the cache partitions.");
+					}
 				}
 			}
 			break;
@@ -1500,9 +1489,9 @@ typedef struct {
 void WndMain::LoadGameLogo()
 {
 	// Export Game Logo bitmap (XTIMAG or XSIMAG)
-	uint8_t *pSection = (uint8_t *)m_Xbe->FindSection("$$XTIMAGE"); // Check for XTIMAGE
+	uint8_t *pSection = (uint8_t *)m_Xbe->FindSection<false>("$$XTIMAGE"); // Check for XTIMAGE
 	if (!pSection) {
-		pSection = (uint8_t *)m_Xbe->FindSection("$$XSIMAGE"); // if XTIMAGE isn't present, check for XSIMAGE (smaller)
+		pSection = (uint8_t *)m_Xbe->FindSection<false>("$$XSIMAGE"); // if XTIMAGE isn't present, check for XSIMAGE (smaller)
 		if (!pSection) {
 			return;
 		}
@@ -1626,15 +1615,9 @@ void WndMain::RefreshMenus()
             // enable/disable close .xbe file
             EnableMenuItem(file_menu, ID_FILE_CLOSE_XBE, MF_BYCOMMAND | MF_WhenXbeLoaded);
 
-            // enable/disable save .xbe file
-            EnableMenuItem(file_menu, ID_FILE_SAVEXBEFILE, MF_BYCOMMAND | MF_WhenXbeLoaded);
-
-            // enable/disable save .xbe file as
-            EnableMenuItem(file_menu, ID_FILE_SAVEXBEFILEAS, MF_BYCOMMAND | MF_WhenXbeLoaded);
-
             // recent xbe files menu
             {
-                HMENU rxbe_menu = GetSubMenu(file_menu, 7);
+                HMENU rxbe_menu = GetSubMenu(file_menu, 4);
 
                 int max = m_dwRecentXbe;
                 for(int v=0;v<max;v++)
@@ -1646,7 +1629,6 @@ void WndMain::RefreshMenus()
         {
             HMENU edit_menu = GetSubMenu(menu, 1);
             HMENU logo_menu = GetSubMenu(edit_menu, 0);
-            HMENU pach_menu = GetSubMenu(edit_menu, 1);
 
             // enable export .xbe info
             EnableMenuItem(edit_menu, ID_EDIT_DUMPXBEINFOTO_FILE, MF_BYCOMMAND | MF_WhenXbeLoaded);
@@ -1657,25 +1639,6 @@ void WndMain::RefreshMenus()
 
             // enable patch menu
             EnableMenuItem(edit_menu, 1, MF_BYPOSITION | MF_WhenXbeLoaded);
-
-            // patch menu
-            {
-                // check "allow >64 MB" if appropriate
-                if(m_Xbe != nullptr)
-                {
-                    UINT chk_flag = (m_Xbe->m_Header.dwInitFlags.bLimit64MB) ? MF_UNCHECKED : MF_CHECKED;
-
-                    CheckMenuItem(pach_menu, ID_EDIT_PATCH_ALLOW64MB, chk_flag);
-                }
-
-                // check "debug mode" if appropriate
-                if(m_Xbe != nullptr)
-                {
-                    UINT chk_flag = ((m_Xbe->m_Header.dwEntryAddr ^ XOR_EP_RETAIL) > 0x01000000) ? MF_CHECKED : MF_UNCHECKED;
-
-                    CheckMenuItem(pach_menu, ID_EDIT_PATCH_DEBUGMODE, chk_flag);
-                }
-            }
         }
 
         // view menu
@@ -1866,7 +1829,7 @@ void WndMain::UpdateDebugConsoles()
 void WndMain::UpdateRecentFiles()
 {
     HMENU FileMenu = GetSubMenu(GetMenu(m_hwnd), 0);
-    HMENU RXbeMenu = GetSubMenu(FileMenu, 7);
+    HMENU RXbeMenu = GetSubMenu(FileMenu, 4);
 
     // clear existing menu items
     {
@@ -1905,16 +1868,9 @@ void WndMain::UpdateCaption()
 {
 	char AsciiTitle[MAX_PATH];
 
-	int i = sprintf(AsciiTitle, "Cxbx-Reloaded %s", CxbxVersionStr);
+	int i = sprintf(AsciiTitle, "Cxbx-Reloaded %s", CxbxrHashBuild);
 	if (m_Xbe != nullptr) {
-		if (m_bIsStarted) {
-			i += sprintf(AsciiTitle + i, " : Emulating ");
-		}
-		else {
-			i += sprintf(AsciiTitle + i, " : Loaded ");
-		}
-
-		i += sprintf(AsciiTitle + i, "%s v1.%02d (%s)", FormatTitleId(m_Xbe->m_Certificate.dwTitleId).c_str(), m_Xbe->m_Certificate.dwVersion, m_Xbe->m_szAsciiTitle);
+		i += sprintf(AsciiTitle + i, " : %s v1.%02d (%s)", FormatTitleId(m_Xbe->m_Certificate.dwTitleId).c_str(), m_Xbe->m_Certificate.dwVersion, m_Xbe->m_szAsciiTitle);
 
 		UpdateFpsStatus();
 		UpdateLogStatus();
@@ -2154,7 +2110,7 @@ void WndMain::OpenMRU(int mru)
 {
 	HMENU menu = GetMenu(m_hwnd);
 	HMENU file_menu = GetSubMenu(menu, 0);
-	HMENU rxbe_menu = GetSubMenu(file_menu, 7);
+	HMENU rxbe_menu = GetSubMenu(file_menu, 4);
 
 	char szBuffer[270];
 
@@ -2284,7 +2240,7 @@ void WndMain::StartEmulation(HWND hwndParent, DebuggerState LocalDebuggerState /
 		}
 
 		bool AttachLocalDebugger = (LocalDebuggerState == debuggerOn);
-		g_EmuShared->SetDebuggingFlag(&AttachLocalDebugger);
+		g_EmuShared->SetDebuggingFlag(AttachLocalDebugger);
 
         /* Main process to generate emulation command line begin. */
         // If we are adding more arguments, this is the place to do so.

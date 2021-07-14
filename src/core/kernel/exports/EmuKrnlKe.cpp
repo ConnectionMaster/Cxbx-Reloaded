@@ -142,7 +142,8 @@ xbox::KPCR* WINAPI KeGetPcr()
 	if (Pcr == nullptr) {
 		EmuLog(LOG_LEVEL::WARNING, "KeGetPCR returned nullptr: Was this called from a non-xbox thread?");
 		// Attempt to salvage the situation by calling InitXboxThread to setup KPCR in place
-		InitXboxThread(g_CPUXbox);
+		InitXboxThread();
+		g_AffinityPolicy->SetAffinityXbox();
 		Pcr = (xbox::PKPCR)__readfsdword(TIB_ArbitraryDataSlot);
 	}
 
@@ -723,7 +724,7 @@ XBSYSAPI EXPORTNUM(108) xbox::void_xt NTAPI xbox::KeInitializeEvent
 		LOG_FUNC_END;
 
 	// HACK: Since we forward to NtDll::NtCreateEvent, this *might* be a Windows handle instead of our own
-	// In this case, it is already initialized so no need tod o anything
+	// In this case, it is already initialized so no need todo anything
 	// Test Case: Xbox Live Dashboard, Network Test (or any other Xbox Live connection)
 	DWORD flags = 0;
 	if (GetHandleInformation((HANDLE)Event, &flags)) {
@@ -1826,8 +1827,8 @@ XBSYSAPI EXPORTNUM(150) xbox::boolean_xt NTAPI xbox::KeSetTimerEx
 	}
 
 	/* Exit the dispatcher */
-	KiUnlockDispatcherDatabase(OldIrql);
 	KiTimerUnlock();
+	KiUnlockDispatcherDatabase(OldIrql);
 
 	RETURN(Inserted);
 }

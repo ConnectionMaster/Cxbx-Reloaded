@@ -85,7 +85,7 @@ namespace xbox
 	// ******************************************************************
 	typedef char_xt *PCHAR;
 	typedef char_xt *PSZ;
-	typedef char_xt *PCSZ;
+	typedef const char_xt *PCSZ;
 	typedef byte_xt *PBYTE;
 	typedef boolean_xt *PBOOLEAN;
 	typedef uchar_xt *PUCHAR;
@@ -133,4 +133,9 @@ namespace xbox
 	// ******************************************************************
 	static_assert(CHAR_BIT == 8);
 	static_assert(sizeof(char16_t) == 2);
+
+	// ******************************************************************
+	// Defines
+	// ******************************************************************
+	constexpr uint_xt max_path{ 260 }; // Xbox file path max limitation
 }

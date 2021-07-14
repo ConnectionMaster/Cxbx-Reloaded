@@ -29,21 +29,28 @@
 
 #include "Button.h"
 #include "common\util\CxbxUtil.h"
+#include <array>
 
 
 /* Represents the guest device currently being configured in the gui */
 class EmuDevice
 {
 public:
-	EmuDevice(int type, HWND hwnd);
+	EmuDevice(int type, HWND hwnd, void *wnd);
 	~EmuDevice();
 	Button* FindButtonById(int id);
 	Button* FindButtonByIndex(int index);
-	void BindDefault(int api);
+	template<size_t size>
+	void BindDefault(const std::array<const char *, size> &arr);
 	void ClearButtons();
 
 
 private:
+	void CreateTooltipWindow();
+
 	std::vector<Button*> m_buttons;
 	HWND m_hwnd;
+	HWND m_tooltip_hwnd;
 };
+
+template void EmuDevice::BindDefault(const std::array<const char *, XBOX_CTRL_NUM_BUTTONS> &arr);

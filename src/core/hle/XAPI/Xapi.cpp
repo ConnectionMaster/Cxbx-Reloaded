@@ -40,48 +40,95 @@
 #include "core\kernel\support\EmuFile.h"
 #include "EmuShared.h"
 #include "core\hle\Intercept.hpp"
-#include "vsbc\CxbxVSBC.h"
 #include "Windef.h"
 #include <vector>
 #include "core\hle\XAPI\Xapi.h"
-#include "core\hle\XAPI\XapiCxbxr.h"
+#include <charconv>
 
-bool g_bCxbxVSBCLoaded = false;
-HINSTANCE g_module;
-typedef int (FAR WINAPI *PFARPROC1)(int);
-typedef int (FAR WINAPI *PFARPROC2)(UCHAR*);
-typedef int (NEAR WINAPI *PNEARPROC1)(int);
-typedef int (NEAR WINAPI *PNEARPROC2)(UCHAR*);
-typedef int (WINAPI *PPROC)();
 
-PFARPROC2 fnCxbxVSBCSetState;
-PFARPROC2 fnCxbxVSBCGetState;
-PFARPROC1 fnCxbxVSBCOpen;
-//typedef DWORD(*fnCxbxVSBCOpen)(HWND);
-//typedef DWORD(*fnCxbxVSBCSetState)(UCHAR *);
-//typedef DWORD(*fnCxbxVSBCGetState)(UCHAR *);
 xbox::PXPP_DEVICE_TYPE g_DeviceType_Gamepad = nullptr;
+xbox::PXPP_DEVICE_TYPE g_DeviceType_SBC = nullptr;
+xbox::PXPP_DEVICE_TYPE g_DeviceType_MU = nullptr;
 
 // Flag is unset after initialize devices is done by simulate LLE USB thread.
 std::atomic<bool> g_bIsDevicesInitializing = true;
 std::atomic<bool> g_bIsDevicesEmulating = false;
 
-//global bridge for xbox controller to host, 4 elements for 4 ports.
-CXBX_CONTROLLER_HOST_BRIDGE g_XboxControllerHostBridge[4] = {
-	{ NULL, PORT_INVALID, XBOX_INPUT_DEVICE::DEVICE_INVALID, nullptr, false, false, false, { 0, 0, 0, 0, 0 } },
-	{ NULL, PORT_INVALID, XBOX_INPUT_DEVICE::DEVICE_INVALID, nullptr, false, false, false, { 0, 0, 0, 0, 0 } },
-	{ NULL, PORT_INVALID, XBOX_INPUT_DEVICE::DEVICE_INVALID, nullptr, false, false, false, { 0, 0, 0, 0, 0 } },
-	{ NULL, PORT_INVALID, XBOX_INPUT_DEVICE::DEVICE_INVALID, nullptr, false, false, false, { 0, 0, 0, 0, 0 } },
-};
+// Protects access to xpp types
+std::atomic<bool> g_bXppGuard = false;
 
+// Allocate enough memory for the max number of devices we can support simultaneously
+// 4 duke / S / sbc / arcade joystick (mutually exclusive) + 8 memory units
+DeviceState g_devs[MAX_DEVS];
+
+xbox::ulong_xt g_Mounted_MUs = 0;
+xbox::char_xt g_AltLett_MU = 0;
+xbox::ulong_xt *g_XapiMountedMUs = &g_Mounted_MUs;
+xbox::char_xt *g_XapiAltLett_MU = &g_AltLett_MU;
+std::recursive_mutex g_MuLock;
+
+// Declare trampolines
+#define XB_TRAMPOLINES(XB_MACRO)                                                                                                                                     \
+    XB_MACRO(xbox::dword_xt,    WINAPI, XUnmountAlternateTitleA,  (xbox::char_xt)                                                                                );  \
+    XB_MACRO(xbox::ntstatus_xt, WINAPI, XapiMapLetterToDirectory, (xbox::PSTRING, xbox::PSTRING, const xbox::PCHAR, xbox::bool_xt, xbox::PCWSTR, xbox::bool_xt)  );  \
+
+XB_TRAMPOLINES(XB_trampoline_declare);
+
+void LookupTrampolinesXAPI()
+{
+	XB_TRAMPOLINES(XB_trampoline_lookup);
+}
+
+#undef XB_TRAMPOLINES
+
+
+static inline xbox::char_xt MuPort2Lett(xbox::dword_xt port, xbox::dword_xt slot)
+{
+	return 'F' + (XBOX_CTRL_NUM_SLOTS * port) + slot;
+}
+
+static inline int MuPort2Idx(xbox::dword_xt port, xbox::dword_xt slot)
+{
+	return (port << 1) + slot;
+}
+
+static inline bool MuIsMounted(xbox::char_xt lett)
+{
+	return *g_XapiMountedMUs & (1 << (lett - 'F'));
+}
+
+static inline void MuSetMounted(xbox::char_xt lett)
+{
+	*g_XapiMountedMUs |= (1 << (lett - 'F'));
+}
+
+static inline void MuClearMounted(xbox::char_xt lett)
+{
+	*g_XapiMountedMUs &= ~(1 << (lett - 'F'));
+}
 
 bool operator==(xbox::PXPP_DEVICE_TYPE XppType, XBOX_INPUT_DEVICE XidType)
 {
 	switch (XidType)
 	{
 	case XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE:
-    case XBOX_INPUT_DEVICE::MS_CONTROLLER_S: {
+	case XBOX_INPUT_DEVICE::MS_CONTROLLER_S:
+	case XBOX_INPUT_DEVICE::ARCADE_STICK: {
 		if (XppType == g_DeviceType_Gamepad) {
+			return true;
+		}
+	}
+	break;
+
+	case XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER: {
+		if (XppType == g_DeviceType_SBC) {
+			return true;
+		}
+	}
+	break;
+
+	case XBOX_INPUT_DEVICE::MEMORY_UNIT: {
+		if (XppType == g_DeviceType_MU) {
 			return true;
 		}
 	}
@@ -89,9 +136,7 @@ bool operator==(xbox::PXPP_DEVICE_TYPE XppType, XBOX_INPUT_DEVICE XidType)
 
 	case XBOX_INPUT_DEVICE::LIGHT_GUN:
 	case XBOX_INPUT_DEVICE::STEERING_WHEEL:
-	case XBOX_INPUT_DEVICE::MEMORY_UNIT:
 	case XBOX_INPUT_DEVICE::IR_DONGLE:
-	case XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER:
 	default:
 		break;
 	}
@@ -99,88 +144,209 @@ bool operator==(xbox::PXPP_DEVICE_TYPE XppType, XBOX_INPUT_DEVICE XidType)
 	return false;
 }
 
-bool operator!=(xbox::PXPP_DEVICE_TYPE XppType, XBOX_INPUT_DEVICE XidType)
+void UpdateXppState(DeviceState *dev, XBOX_INPUT_DEVICE type, std::string_view port)
 {
-	return !(XppType == XidType);
+	xbox::PXPP_DEVICE_TYPE xpp = nullptr;
+	switch (type)
+	{
+	case XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE:
+	case XBOX_INPUT_DEVICE::MS_CONTROLLER_S:
+	case XBOX_INPUT_DEVICE::ARCADE_STICK:
+		xpp = g_DeviceType_Gamepad;
+		break;
+
+	case XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER:
+		xpp = g_DeviceType_SBC;
+		break;
+
+	case XBOX_INPUT_DEVICE::MEMORY_UNIT:
+		xpp = g_DeviceType_MU;
+		break;
+
+	default:
+		assert(0);
+	}
+
+	if (xpp == nullptr) {
+		// This will happen with xbes that act like launchers, and don't link against the xinput libraries, which results in all the global
+		// xpp types being nullptr. Test case: Innocent Tears
+		return;
+	}
+
+	int port_num, slot;
+	PortStr2Int(port, &port_num, &slot);
+	xbox::ulong_xt port_mask = 1 << port_num;
+	xbox::ulong_xt slot_mask = 0;
+
+	// Guard against the unfortunate case where XGetDevices or XGetDeviceChanges have already checked for g_bIsDevicesInitializing
+	// and g_bIsDevicesEmulating and a thread switch happens to this function
+	while (g_bXppGuard) {}
+
+	if (xpp == g_DeviceType_MU) {
+		assert(slot != PORT_INVALID);
+		if (slot == 1) {
+			slot_mask = 16;
+		}
+	}
+
+	if (xpp == dev->type && !dev->bPendingRemoval) {
+		xpp->CurrentConnected |= (port_mask << slot_mask);
+	}
+	else {
+		xpp->CurrentConnected &= ~(port_mask << slot_mask);
+	}
+
+	xpp->ChangeConnected = xpp->PreviousConnected ^ xpp->CurrentConnected;
 }
 
-bool ConstructHleInputDevice(int Type, int Port)
+void ConstructHleInputDevice(DeviceState *dev, DeviceState *upstream, int type, std::string_view port)
 {
 	g_bIsDevicesEmulating = true;
-	bool ret = true;
 
-	switch (Type)
+	if (g_bIsChihiro) {
+		// Don't emulate XID devices during Chihiro Emulation
+		g_bIsDevicesEmulating = false;
+		return;
+	}
+	// Set up common device state
+	int port_num, slot;
+	PortStr2Int(port, &port_num, &slot);
+	dev->upstream = nullptr;
+	dev->port = port;
+	dev->port_idx = port_num;
+	dev->bPendingRemoval = false;
+	dev->bSignaled = false;
+	dev->info.dwPacketNumber = 0;
+	dev->slots[SLOT_TOP] = dev->slots[SLOT_BOTTOM] = nullptr;
+
+	// NOTE: initialize bAutoPollDefault to its default state, which varies depending on the device type
+	switch (type)
 	{
-	case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE): {
-		g_XboxControllerHostBridge[Port].XboxPort = Port;
-		g_XboxControllerHostBridge[Port].XboxType = XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE;
-		g_XboxControllerHostBridge[Port].InState = new XpadInput();
-		g_XboxControllerHostBridge[Port].bPendingRemoval = false;
-		g_XboxControllerHostBridge[Port].bSignaled = false;
-		g_XboxControllerHostBridge[Port].bIoInProgress = false;
-		g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucType = XINPUT_DEVTYPE_GAMEPAD;
-		g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucSubType = XINPUT_DEVSUBTYPE_GC_GAMEPAD;
-		g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucInputStateSize = sizeof(XpadInput);
-		g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucFeedbackSize = sizeof(XpadOutput);
-		g_XboxControllerHostBridge[Port].XboxDeviceInfo.dwPacketNumber = 0;
-	}
-	break;
-    case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S): {
-        g_XboxControllerHostBridge[Port].XboxPort = Port;
-        g_XboxControllerHostBridge[Port].XboxType = XBOX_INPUT_DEVICE::MS_CONTROLLER_S;
-        g_XboxControllerHostBridge[Port].InState = new XpadInput();
-        g_XboxControllerHostBridge[Port].bPendingRemoval = false;
-        g_XboxControllerHostBridge[Port].bSignaled = false;
-        g_XboxControllerHostBridge[Port].bIoInProgress = false;
-        g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucType = XINPUT_DEVTYPE_GAMEPAD;
-        g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucSubType = XINPUT_DEVSUBTYPE_GC_GAMEPAD_ALT;
-        g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucInputStateSize = sizeof(XpadInput);
-        g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucFeedbackSize = sizeof(XpadOutput);
-        g_XboxControllerHostBridge[Port].XboxDeviceInfo.dwPacketNumber = 0;
-    }
-	break;
-	case to_underlying(XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER): {
-		// TODO
-	}
-	break;
+	case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE):
+		dev->type = XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE;
+		dev->info.bAutoPollDefault = true;
+		dev->info.ucType = XINPUT_DEVTYPE_GAMEPAD;
+		dev->info.ucSubType = XINPUT_DEVSUBTYPE_GC_GAMEPAD;
+		dev->info.ucInputStateSize = sizeof(XpadInput);
+		dev->info.ucFeedbackSize = sizeof(XpadOutput);
+		break;
 
-	case to_underlying(XBOX_INPUT_DEVICE::LIGHT_GUN):
-	case to_underlying(XBOX_INPUT_DEVICE::STEERING_WHEEL):
+	case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S):
+		dev->type = XBOX_INPUT_DEVICE::MS_CONTROLLER_S;
+		dev->info.bAutoPollDefault = true;
+		dev->info.ucType = XINPUT_DEVTYPE_GAMEPAD;
+		dev->info.ucSubType = XINPUT_DEVSUBTYPE_GC_GAMEPAD_ALT;
+		dev->info.ucInputStateSize = sizeof(XpadInput);
+		dev->info.ucFeedbackSize = sizeof(XpadOutput);
+		break;
+
+	case to_underlying(XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER):
+		dev->type = XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER;
+		dev->info.buff.sbc.ucGearLever = 8;
+		dev->info.buff.sbc.sAimingX = static_cast<uint8_t>(0x7F);
+		dev->info.buff.sbc.sAimingY = static_cast<uint8_t>(0x7F);
+		dev->info.bAutoPollDefault = true;
+		dev->info.ucType = XINPUT_DEVTYPE_STEELBATTALION;
+		dev->info.ucSubType = XINPUT_DEVSUBTYPE_GC_GAMEPAD_ALT;
+		dev->info.ucInputStateSize = sizeof(SBCInput);
+		dev->info.ucFeedbackSize = sizeof(SBCOutput);
+		break;
+
+	case to_underlying(XBOX_INPUT_DEVICE::ARCADE_STICK):
+		dev->type = XBOX_INPUT_DEVICE::ARCADE_STICK;
+		dev->info.bAutoPollDefault = true;
+		dev->info.ucType = XINPUT_DEVTYPE_GAMEPAD;
+		dev->info.ucSubType = XINPUT_DEVSUBTYPE_GC_ARCADE_STICK;
+		dev->info.ucInputStateSize = sizeof(XpadInput);
+		dev->info.ucFeedbackSize = sizeof(XpadOutput);
+		break;
+
 	case to_underlying(XBOX_INPUT_DEVICE::MEMORY_UNIT):
-	case to_underlying(XBOX_INPUT_DEVICE::IR_DONGLE): {
-		EmuLog(LOG_LEVEL::INFO, "%s: device %s is not yet supported", __func__, GetInputDeviceName(Type).c_str());
-		ret = false;
+		assert(upstream != nullptr);
+		dev->upstream = upstream;
+		dev->type = XBOX_INPUT_DEVICE::MEMORY_UNIT;
+		dev->port_idx = PORT_INVALID;
+		assert(slot != PORT_INVALID);
+		dev->upstream->slots[slot] = dev;
+		break;
+
+	default:
+		assert(0);
+	}
+
+	UpdateXppState(dev, static_cast<XBOX_INPUT_DEVICE>(type), port);
+
+	g_bIsDevicesEmulating = false;
+
+	EmuLogEx(CXBXR_MODULE::INPSYS, LOG_LEVEL::INFO, "Attached device %s to port %s", GetInputDeviceName(type).c_str(), PortUserFormat(port).c_str());
+}
+
+void DestructHleInputDevice(DeviceState *dev)
+{
+	g_bIsDevicesEmulating = true;
+
+	// Clear common device state
+	XBOX_INPUT_DEVICE type = dev->type;
+	std::string port = dev->port;
+	dev->port_idx = PORT_INVALID;
+	dev->type = XBOX_INPUT_DEVICE::DEVICE_INVALID;
+	dev->port = std::to_string(PORT_INVALID);
+	dev->bPendingRemoval = false;
+	dev->bSignaled = false;
+	dev->slots[SLOT_TOP] = dev->slots[SLOT_BOTTOM] = nullptr;
+
+	switch (type)
+	{
+	case XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE:
+	case XBOX_INPUT_DEVICE::MS_CONTROLLER_S:
+		dev->info.bAutoPollDefault = false;
+		dev->info.ucType = 0;
+		dev->info.ucSubType = 0;
+		dev->info.ucInputStateSize = 0;
+		dev->info.ucFeedbackSize = 0;
+		dev->info.dwPacketNumber = 0;
+		std::memset(&dev->info.buff.ctrl, 0, sizeof(XpadInput));
+		break;
+
+	case XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER:
+		dev->info.bAutoPollDefault = false;
+		dev->info.ucType = 0;
+		dev->info.ucSubType = 0;
+		dev->info.ucInputStateSize = 0;
+		dev->info.ucFeedbackSize = 0;
+		dev->info.dwPacketNumber = 0;
+		std::memset(&dev->info.buff.sbc, 0, sizeof(SBCInput));
+		break;
+
+	case XBOX_INPUT_DEVICE::ARCADE_STICK:
+		dev->info.bAutoPollDefault = false;
+		dev->info.ucType = 0;
+		dev->info.ucSubType = 0;
+		dev->info.ucInputStateSize = 0;
+		dev->info.ucFeedbackSize = 0;
+		dev->info.dwPacketNumber = 0;
+		std::memset(&dev->info.buff.ctrl, 0, sizeof(XpadInput));
+		break;
+
+	case XBOX_INPUT_DEVICE::MEMORY_UNIT: {
+		assert(dev->upstream != nullptr);
+		int port_num, slot;
+		PortStr2Int(port, &port_num, &slot);
+		assert(slot != PORT_INVALID);
+		dev->upstream->slots[slot] = nullptr;
 	}
 	break;
 
 	default:
-		EmuLog(LOG_LEVEL::WARNING, "Attempted to attach an unknown device type (type was %d)", Type);
-		ret = false;
-		break;
+		assert(0);
 	}
 
-	g_bIsDevicesEmulating = false;
-	return ret;
-}
-
-void DestructHleInputDevice(int Port)
-{
-	g_bIsDevicesEmulating = true;
-
-	g_XboxControllerHostBridge[Port].XboxType = XBOX_INPUT_DEVICE::DEVICE_INVALID;
-	g_XboxControllerHostBridge[Port].XboxPort = PORT_INVALID;
-	while (g_XboxControllerHostBridge[Port].bIoInProgress) {}
-	delete g_XboxControllerHostBridge[Port].InState;
-	g_XboxControllerHostBridge[Port].bPendingRemoval = false;
-	g_XboxControllerHostBridge[Port].bSignaled = false;
-	g_XboxControllerHostBridge[Port].bIoInProgress = false;
-	g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucType = 0;
-	g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucSubType = 0;
-	g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucInputStateSize = 0;
-	g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucFeedbackSize = 0;
-	g_XboxControllerHostBridge[Port].XboxDeviceInfo.dwPacketNumber = 0;
+	UpdateXppState(dev, type, port);
+	dev->upstream = nullptr;
 
 	g_bIsDevicesEmulating = false;
+
+	EmuLogEx(CXBXR_MODULE::INPSYS, LOG_LEVEL::INFO, "Detached device %s from port %s", GetInputDeviceName(to_underlying(type)).c_str(), PortUserFormat(port).c_str());
 }
 
 void SetupXboxDeviceTypes()
@@ -190,7 +356,7 @@ void SetupXboxDeviceTypes()
 		// First, attempt to find GetTypeInformation
 		auto typeInformation = g_SymbolAddresses.find("GetTypeInformation");
 		if (typeInformation != g_SymbolAddresses.end() && typeInformation->second != xbox::zero) {
-			printf("Deriving XDEVICE_TYPE_GAMEPAD from DeviceTable (via GetTypeInformation)\n");
+			EmuLog(LOG_LEVEL::INFO, "Deriving XDEVICE_TYPE_GAMEPAD from DeviceTable (via GetTypeInformation)");
 			// Read the offset values of the device table structure from GetTypeInformation
 			xbox::addr_xt deviceTableStartOffset = *(uint32_t*)((uint32_t)typeInformation->second + 0x01);
 			xbox::addr_xt deviceTableEndOffset = *(uint32_t*)((uint32_t)typeInformation->second + 0x09);
@@ -198,9 +364,9 @@ void SetupXboxDeviceTypes()
 			// Calculate the number of device entires in the table
 			size_t deviceTableEntryCount = (deviceTableEndOffset - deviceTableStartOffset) / sizeof(uint32_t);
 
-			printf("DeviceTableStart: 0x%08X\n", deviceTableStartOffset);
-			printf("DeviceTableEnd: 0x%08X\n", deviceTableEndOffset);
-			printf("DeviceTable Entires: %u\n", deviceTableEntryCount);
+			EmuLog(LOG_LEVEL::INFO, "DeviceTableStart: 0x%08X", deviceTableStartOffset);
+			EmuLog(LOG_LEVEL::INFO, "DeviceTableEnd: 0x%08X", deviceTableEndOffset);
+			EmuLog(LOG_LEVEL::INFO, "DeviceTable Entires: %u", deviceTableEntryCount);
 
 			// Sanity check: Where all these device offsets within Xbox memory
 			if ((deviceTableStartOffset >= g_SystemMaxMemory) || (deviceTableEndOffset >= g_SystemMaxMemory)) {
@@ -215,20 +381,22 @@ void SetupXboxDeviceTypes()
 					continue;
 				}
 
-				printf("----------------------------------------\n");
-				printf("DeviceTable[%u]->ucType = %d\n", i, deviceTable[i]->ucType);
-				printf("DeviceTable[%u]->XppType = 0x%08X (", i, (uintptr_t)deviceTable[i]->XppType);
+				EmuLog(LOG_LEVEL::INFO, "----------------------------------------");
+				EmuLog(LOG_LEVEL::INFO, "DeviceTable[%u]->ucType = %d", i, deviceTable[i]->ucType);
 
-                switch (deviceTable[i]->ucType) {
-                case XINPUT_DEVTYPE_GAMEPAD:
-                    g_DeviceType_Gamepad = deviceTable[i]->XppType;
-                    printf("XDEVICE_TYPE_GAMEPAD)\n");
-                    break;
-                case XINPUT_DEVTYPE_STEELBATALION:
-                    printf("XDEVICE_TYPE_STEELBATALION)\n");
-                    break;
+				switch (deviceTable[i]->ucType) {
+				case XINPUT_DEVTYPE_GAMEPAD:
+					g_DeviceType_Gamepad = deviceTable[i]->XppType;
+					EmuLog(LOG_LEVEL::INFO, "DeviceTable[%u]->XppType = 0x%08X (XDEVICE_TYPE_GAMEPAD)", i, (uintptr_t)g_DeviceType_Gamepad);
+					break;
+
+				case XINPUT_DEVTYPE_STEELBATTALION:
+					g_DeviceType_SBC = deviceTable[i]->XppType;
+					EmuLog(LOG_LEVEL::INFO, "DeviceTable[%u]->XppType = 0x%08X (XDEVICE_TYPE_STEELBATTALION)", i, (uintptr_t)g_DeviceType_SBC);
+					break;
+
 				default:
-					printf("Unknown device type)\n");
+					EmuLog(LOG_LEVEL::WARNING, "DeviceTable[%u]->XppType = 0x%08X (Unknown device type)", i, (uintptr_t)deviceTable[i]->XppType);
 					continue;
 				}
 			}
@@ -238,7 +406,7 @@ void SetupXboxDeviceTypes()
 			// so this works well for us.
 			void* XInputOpenAddr = (void*)g_SymbolAddresses["XInputOpen"];
 			if (XInputOpenAddr != nullptr) {
-				printf("XAPI: Deriving XDEVICE_TYPE_GAMEPAD from XInputOpen (0x%08X)\n", (uintptr_t)XInputOpenAddr);
+				EmuLog(LOG_LEVEL::INFO, "Deriving XDEVICE_TYPE_GAMEPAD from XInputOpen (0x%08X)", (uintptr_t)XInputOpenAddr);
 				g_DeviceType_Gamepad = *(xbox::PXPP_DEVICE_TYPE*)((uint32_t)XInputOpenAddr + 0x0B);
 			}
 		}
@@ -248,8 +416,52 @@ void SetupXboxDeviceTypes()
 			return;
 		}
 
-		printf("XAPI: XDEVICE_TYPE_GAMEPAD Found at 0x%08X\n", (uintptr_t)g_DeviceType_Gamepad);
+		EmuLog(LOG_LEVEL::INFO, "XDEVICE_TYPE_GAMEPAD found at 0x%08X", (uintptr_t)g_DeviceType_Gamepad);
 	}
+
+	if (xbox::addr_xt mu_xpp_type = g_SymbolAddresses["g_DeviceType_MU"]) {
+		g_DeviceType_MU = reinterpret_cast<xbox::PXPP_DEVICE_TYPE>(mu_xpp_type);
+		EmuLog(LOG_LEVEL::INFO, "XDEVICE_TYPE_MEMORY_UNIT found at 0x%08X", reinterpret_cast<uintptr_t>(g_DeviceType_MU));
+	}
+	else {
+		EmuLog(LOG_LEVEL::INFO, "XDEVICE_TYPE_MEMORY_UNIT was not found by XbSymbolDatabase");
+	}
+
+	if (xbox::addr_xt xapi_mounted_mu = g_SymbolAddresses["g_XapiMountedMUs"]) {
+		g_XapiMountedMUs = reinterpret_cast<xbox::ulong_xt *>(xapi_mounted_mu);
+		EmuLog(LOG_LEVEL::INFO, "XapiMountedMUs found at 0x%08X", reinterpret_cast<uintptr_t>(g_XapiMountedMUs));
+
+		g_XapiAltLett_MU = reinterpret_cast<xbox::char_xt *>(g_XapiMountedMUs - 1);
+		EmuLog(LOG_LEVEL::INFO, "XapiAltLett_MU found at 0x%08X", reinterpret_cast<uintptr_t>(g_XapiAltLett_MU));
+	}
+	else {
+		EmuLog(LOG_LEVEL::INFO, "XapiMountedMUs was not found by XbSymbolDatabase");
+	}
+}
+
+template<bool IsXInputPoll>
+xbox::dword_xt CxbxImpl_XInputHandler(xbox::HANDLE hDevice, xbox::PXINPUT_STATE pState)
+{
+	xbox::dword_xt status = ERROR_DEVICE_NOT_CONNECTED;
+	DeviceState *dev = static_cast<DeviceState *>(hDevice);
+	int port = dev->port_idx;
+
+	if ((g_devs[port].info.hHandle == hDevice) && !g_devs[port].bPendingRemoval) {
+		if (g_devs[port].info.bAutoPoll != IsXInputPoll) {
+			if (g_InputDeviceManager.UpdateXboxPortInput(port, &g_devs[port].info.buff, DIRECTION_IN, to_underlying(g_devs[port].type))) {
+				g_devs[port].info.dwPacketNumber++;
+			}
+		}
+
+		if constexpr (!IsXInputPoll) {
+			std::memcpy((void *)&pState->Gamepad, &g_devs[port].info.buff, g_devs[port].info.ucInputStateSize);
+			pState->dwPacketNumber = g_devs[port].info.dwPacketNumber;
+		}
+
+		status = ERROR_SUCCESS;
+	}
+
+	return status;
 }
 
 // ******************************************************************
@@ -280,39 +492,6 @@ xbox::void_xt WINAPI xbox::EMUPATCH(XInitDevices)
 	}).detach();
 }
 
-// This is called to emulate async for both XGetDevices and XGetDeviceChanges
-void UpdateConnectedDeviceState(xbox::PXPP_DEVICE_TYPE DeviceType) {
-
-	// Do not process the queries until initialize delay and device emulating are complete.
-	if (g_bIsDevicesInitializing || g_bIsDevicesEmulating){
-		return;
-	}
-
-	int Port, PortMask;
-	for (Port = PORT_1, PortMask = 1; Port <= PORT_4; Port++, PortMask <<= 1) {
-		if (DeviceType == g_XboxControllerHostBridge[Port].XboxType) {
-			if (!g_XboxControllerHostBridge[Port].bPendingRemoval) {
-				DeviceType->CurrentConnected |= PortMask;
-			}
-			else {
-				if (!g_XboxControllerHostBridge[Port].bSignaled) {
-					g_XboxControllerHostBridge[Port].bSignaled = true;
-					SDL_Event DeviceRemoveEvent;
-					SDL_memset(&DeviceRemoveEvent, 0, sizeof(SDL_Event));
-					DeviceRemoveEvent.type = Sdl::DeviceRemoveAck_t;
-					DeviceRemoveEvent.user.data1 = new int(Port);
-					SDL_PushEvent(&DeviceRemoveEvent);
-				}
-				DeviceType->CurrentConnected &= ~PortMask;
-			}
-		}
-		else {
-			DeviceType->CurrentConnected &= ~PortMask;
-		}
-	}
-	DeviceType->ChangeConnected = DeviceType->PreviousConnected ^ DeviceType->CurrentConnected;
-}
-
 // ******************************************************************
 // * patch: XGetDevices
 // * Note: This could be unpatched however,
@@ -327,7 +506,24 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XGetDevices)
 {
 	LOG_FUNC_ONE_ARG(DeviceType);
 
-	UpdateConnectedDeviceState(DeviceType);
+	g_bXppGuard = true;
+
+	if (g_bIsDevicesInitializing || g_bIsDevicesEmulating) {
+		g_bXppGuard = false;
+		RETURN(DeviceType->CurrentConnected);
+	}
+
+	for (unsigned i = 0; i < 12; ++i) {
+		if (static_cast<uint8_t>(g_devs[i].bPendingRemoval) &
+			~(static_cast<uint8_t>(g_devs[i].bSignaled))) {
+			g_devs[i].bSignaled = true;
+			SDL_Event DeviceRemoveEvent;
+			SDL_memset(&DeviceRemoveEvent, 0, sizeof(SDL_Event));
+			DeviceRemoveEvent.type = Sdl::DeviceRemoveAck_t;
+			DeviceRemoveEvent.user.data1 = new std::string(g_devs[i].port);
+			SDL_PushEvent(&DeviceRemoveEvent);
+		}
+	}
 
 	UCHAR oldIrql = xbox::KeRaiseIrqlToDpcLevel();
 
@@ -337,6 +533,8 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XGetDevices)
 	DeviceType->PreviousConnected = DeviceType->CurrentConnected;
 
 	xbox::KfLowerIrql(oldIrql);
+
+	g_bXppGuard = false;
 
 	RETURN(ret);
 }
@@ -361,10 +559,27 @@ xbox::bool_xt WINAPI xbox::EMUPATCH(XGetDeviceChanges)
 		LOG_FUNC_ARG(pdwRemovals)
 	LOG_FUNC_END;
 
-	UpdateConnectedDeviceState(DeviceType);
+	g_bXppGuard = true;
+	if (g_bIsDevicesInitializing || g_bIsDevicesEmulating) {
+		*pdwInsertions = 0;
+		*pdwRemovals = 0;
+		g_bXppGuard = false;
+		RETURN(FALSE);
+	}
+
+	for (unsigned i = 0; i < 12; ++i) {
+		if (static_cast<uint8_t>(g_devs[i].bPendingRemoval) &
+			~(static_cast<uint8_t>(g_devs[i].bSignaled))) {
+			g_devs[i].bSignaled = true;
+			SDL_Event DeviceRemoveEvent;
+			SDL_memset(&DeviceRemoveEvent, 0, sizeof(SDL_Event));
+			DeviceRemoveEvent.type = Sdl::DeviceRemoveAck_t;
+			DeviceRemoveEvent.user.data1 = new std::string(g_devs[i].port);
+			SDL_PushEvent(&DeviceRemoveEvent);
+		}
+	}
 
 	BOOL ret = FALSE;
-
 
     if(!DeviceType->ChangeConnected)
     {
@@ -392,6 +607,7 @@ xbox::bool_xt WINAPI xbox::EMUPATCH(XGetDeviceChanges)
 
 		xbox::KfLowerIrql(oldIrql);
     }
+	g_bXppGuard = false;
 
 	RETURN(ret);
 }
@@ -414,38 +630,18 @@ xbox::HANDLE WINAPI xbox::EMUPATCH(XInputOpen)
 		LOG_FUNC_ARG(pPollingParameters)
 		LOG_FUNC_END;
 
+	if (DeviceType == g_DeviceType_MU) {
+		// MUs cannot be opened with XInputOpen
+		RETURN(NULL);
+	}
+
     if (dwPort >= PORT_1 && dwPort <= PORT_4) {
-        if (DeviceType == g_XboxControllerHostBridge[dwPort].XboxType) {
-#if 0 // TODO
-            if(g_XboxControllerHostBridge[dwPort].dwHostType==X_XONTROLLER_HOST_BRIDGE_HOSTTYPE_VIRTUAL_SBC){
-                //if DLL not loaded yet, load it.
-                if (g_bCxbxVSBCLoaded != true) {
-
-                    g_module = LoadLibrary(TEXT("CxbxVSBC.dll"));
-                    if (g_module != 0) {
-                        g_bCxbxVSBCLoaded = true;
-                    }
-                }
-                if(g_module!=0&& fnCxbxVSBCOpen==0){
-                    fnCxbxVSBCSetState = (PFARPROC2)GetProcAddress(g_module, "VSBCSetState");
-                    fnCxbxVSBCGetState = (PFARPROC2)GetProcAddress(g_module, "VSBCGetState");
-                    fnCxbxVSBCOpen = (PFARPROC1)GetProcAddress(g_module, "VSBCOpen");
-                }
-                
-                if (fnCxbxVSBCOpen == 0) {
-                    printf("EmuXapi: EmuXInputOpen: GetPRocAddress VSBCOpen failed!\n");
-                }
-                else {
-                    (*fnCxbxVSBCOpen)(X_XONTROLLER_HOST_BRIDGE_HOSTTYPE_VIRTUAL_SBC);
-                }
-                //DWORD dwVXBCOpenResult = CxbxVSBC::MyCxbxVSBC::VSBCOpen(X_XONTROLLER_HOST_BRIDGE_HOSTTYPE_VIRTUAL_SBC);
-
-            }
-#endif
-			g_XboxControllerHostBridge[dwPort].hXboxDevice = &g_XboxControllerHostBridge[dwPort];
-			RETURN(g_XboxControllerHostBridge[dwPort].hXboxDevice);
+        if (DeviceType == g_devs[dwPort].type) {
+			g_devs[dwPort].info.bAutoPoll = pPollingParameters != xbox::zeroptr ?
+				pPollingParameters->fAutoPoll : g_devs[dwPort].info.bAutoPollDefault;
+			g_devs[dwPort].info.hHandle = &g_devs[dwPort];
+			RETURN(g_devs[dwPort].info.hHandle);
         }
-        
     }
     
 	RETURN(NULL);
@@ -461,10 +657,9 @@ xbox::void_xt WINAPI xbox::EMUPATCH(XInputClose)
 {
 	LOG_FUNC_ONE_ARG(hDevice);
 
-	PCXBX_CONTROLLER_HOST_BRIDGE Device = (PCXBX_CONTROLLER_HOST_BRIDGE)hDevice;
-	int Port = Device->XboxPort;
-	if (g_XboxControllerHostBridge[Port].hXboxDevice == hDevice) {
-		Device->hXboxDevice = NULL;
+	DeviceState *dev = static_cast<DeviceState *>(hDevice);
+	if (g_devs[dev->port_idx].info.hHandle == hDevice) {
+		dev->info.hHandle = NULL;
 	}
 }
 
@@ -478,9 +673,10 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XInputPoll)
 {
 	LOG_FUNC_ONE_ARG(hDevice);
 
-	// Nothing to do
+	// Test cases: Oddworld: Stranger's Wrath, Jet Set Radio Future, Splinter Cell 2, Panzer Dragoon Orta and 1
+	dword_xt ret = CxbxImpl_XInputHandler<true>(hDevice, nullptr);
 
-	RETURN(ERROR_SUCCESS);
+	RETURN(ret);
 }
 
 // ******************************************************************
@@ -498,243 +694,18 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XInputGetCapabilities)
 		LOG_FUNC_END;
 
     dword_xt ret = ERROR_DEVICE_NOT_CONNECTED;
-	PCXBX_CONTROLLER_HOST_BRIDGE Device = (PCXBX_CONTROLLER_HOST_BRIDGE)hDevice;
-	int Port = Device->XboxPort;
-    if (g_XboxControllerHostBridge[Port].hXboxDevice == hDevice && !g_XboxControllerHostBridge[Port].bPendingRemoval) {
-        pCapabilities->SubType = g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucSubType;
+	DeviceState *dev = static_cast<DeviceState *>(hDevice);
+	int port = dev->port_idx;
+    if (g_devs[port].info.hHandle == hDevice && !g_devs[port].bPendingRemoval) {
+        pCapabilities->SubType = g_devs[port].info.ucSubType;
         UCHAR* pCap = (UCHAR*)(&pCapabilities->In);
-        memset(pCap, 0xFF, g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucInputStateSize + g_XboxControllerHostBridge[Port].XboxDeviceInfo.ucFeedbackSize);
+        std::memset(pCap, 0xFF, g_devs[port].info.ucInputStateSize + g_devs[port].info.ucFeedbackSize);
 		ret = ERROR_SUCCESS;
     }
     
 	RETURN(ret);
 }
 
-//variable names correlated to X_SBC_FEEDBACK, mapped to each nibble accordingly.
-char * XboxSBCFeedbackNames[] = {
-    "EmergencyEject",
-    "CockpitHatch",
-    "Ignition",
-    "Start",
-    "OpenClose",
-    "MapZoomInOut",
-    "ModeSelect",
-    "SubMonitorModeSelect",
-    "MainMonitorZoomIn",
-    "MainMonitorZoomOut",
-    "ForecastShootingSystem",
-    "Manipulator",
-    "LineColorChange",
-    "Washing",
-    "Extinguisher",
-    "Chaff",
-    "TankDetach",
-    "Override",
-    "NightScope",
-    "F1",
-    "F2",
-    "F3",
-    "MainWeaponControl",
-    "SubWeaponControl",
-    "MagazineChange",
-    "Comm1",
-    "Comm2",
-    "Comm3",
-    "Comm4",
-    "Comm5",
-    "Unknown",
-    "GearR",
-    "GearN",
-    "Gear1",
-    "Gear2",
-    "Gear3",
-    "Gear4",
-    "Gear5"
-};
-
-//keep last SBC_GAMEPAD status, for DIP switch and GearLever
-xbox::X_SBC_GAMEPAD XboxSBCGamepad = {};
-
-//virtual SteelBatalion controller GetState, using port 0 from XInput and DirectInput to emulate virtual controller.
-void EmuSBCGetState(xbox::PX_SBC_GAMEPAD pSBCGamepad, xbox::PXINPUT_GAMEPAD pXIGamepad, xbox::PXINPUT_GAMEPAD pDIGamepad)
-{
-    // Now convert those values to SteelBatalion Gamepad
-
-    //restore certain variables such as GerLever and Toggle Switches.
-
-    //restore the kept ucGearLever
-    pSBCGamepad->ucGearLever = XboxSBCGamepad.ucGearLever;
-    //we use continues range 7~13, 8 for gear N.
-    if (pSBCGamepad->ucGearLever < 7 || pSBCGamepad->ucGearLever>13) {
-        pSBCGamepad->ucGearLever = 8;
-    }
-
-    //restore Toggle Switches.
-    pSBCGamepad->wButtons[0] |= (XboxSBCGamepad.wButtons[0] & (CXBX_SBC_GAMEPAD_W0_COCKPITHATCH | CXBX_SBC_GAMEPAD_W0_IGNITION));
-
-    pSBCGamepad->wButtons[2] |= (XboxSBCGamepad.wButtons[2]&( CXBX_SBC_GAMEPAD_W2_TOGGLEFILTERCONTROL
-                                                            | CXBX_SBC_GAMEPAD_W2_TOGGLEOXYGENSUPPLY
-                                                            | CXBX_SBC_GAMEPAD_W2_TOGGLEFUELFLOWRATE
-                                                            | CXBX_SBC_GAMEPAD_W2_TOGGLEBUFFREMATERIAL
-                                                            | CXBX_SBC_GAMEPAD_W2_TOGGLEVTLOCATION));
-
-
-    // Analog Sticks
-    pSBCGamepad->sAimingX = pXIGamepad->sThumbRX;
-    pSBCGamepad->sAimingY = pXIGamepad->sThumbRY;
-    pSBCGamepad->sRotationLever = 0;//(pXIGamepad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? 255 : 0;
-    pSBCGamepad->sSightChangeX = pXIGamepad->sThumbLX;
-    pSBCGamepad->sSightChangeY = pXIGamepad->sThumbLY;
-    pSBCGamepad->wLeftPedal = ((SHORT)(pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_LEFT_TRIGGER]))<<8;
-    pSBCGamepad->wMiddlePedal=0;// = (pXIGamepad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 255 : 0;
-    pSBCGamepad->wRightPedal = (SHORT)(pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_RIGHT_TRIGGER])<<8;
-    pSBCGamepad->ucTunerDial=0;//low nibble
-
-    
-    // Digital Buttons
-    if (pXIGamepad->bAnalogButtons [CXBX_XINPUT_GAMEPAD_A]>0) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_RIGHTJOYMAINWEAPON;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_RIGHTJOYMAINWEAPON;
-    }
-    if (pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_B]>0) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_RIGHTJOYFIRE;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_RIGHTJOYFIRE;
-    }
-    if (pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_X]>0) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_RIGHTJOYLOCKON;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_RIGHTJOYLOCKON;
-    }
-    if (pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_Y]>0) {
-        pSBCGamepad->wButtons[1] |= CXBX_SBC_GAMEPAD_W1_WEAPONCONMAGAZINE;
-    }
-    else {
-        pSBCGamepad->wButtons[1] &= ~CXBX_SBC_GAMEPAD_W1_WEAPONCONMAGAZINE;
-    }
-
-    //GearLever 1~5 for gear 1~5, 7~13 for gear R,N,1~5, 15 for gear R. we use the continues range from 7~13
-    if (pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_WHITE]>0) {//Left Shouder, Gear Down
-        if (pSBCGamepad->ucGearLever >7) {
-            pSBCGamepad->ucGearLever-- ;
-        }
-    }
-
-    if (pXIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_BLACK]>0) {//Right Shouder, Gear Up
-        if (pSBCGamepad->ucGearLever < 13) {
-            pSBCGamepad->ucGearLever ++;
-        }
-    }
-    //OLD_XINPUT
-    /* //not used, don't duplicate the handling for same setting of pXIGamepad's members, later one will over write privous one.
-    if (pXIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_START) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_START;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_START;
-    }
-    */
-    if (pXIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_LEFT_THUMB) {//Center Sight Change
-        pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_LEFTJOYSIGHTCHANGE;
-    }
-    else {
-        pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_LEFTJOYSIGHTCHANGE;
-    }
-    //OLD_XINPUT
-    /* //not used
-    if (pXIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_RIGHT_THUMB) {
-        pSBCGamepad->wButtons |= CXBX_XINPUT_GAMEPAD_RIGHT_THUMB;
-    }
-    else {
-        pSBCGamepad->wButtons &= ~CXBX_XINPUT_GAMEPAD_RIGHT_THUMB;
-    }
-    */
-
-
-    //additional input from 2nd input, default using directinput
-    if (pDIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_A]>0) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_START;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_START;
-    }
-    // Iginition is Toggle Switch
-    if (pDIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_B]>0) {
-        if (pSBCGamepad->wButtons[0] & CXBX_SBC_GAMEPAD_W0_IGNITION) {
-            pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_IGNITION;
-        }
-        else {
-            pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_IGNITION;
-        }
-    }
-
-    if (pDIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_X]>0) {
-        pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_EJECT;
-    }
-    else {
-        pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_EJECT;
-    }
-    // CockpitHatch is Toggle Switch
-    if (pDIGamepad->bAnalogButtons[CXBX_XINPUT_GAMEPAD_Y]>0) {
-        if (pSBCGamepad->wButtons[0] & CXBX_SBC_GAMEPAD_W0_COCKPITHATCH) {
-            pSBCGamepad->wButtons[0] &= ~CXBX_SBC_GAMEPAD_W0_COCKPITHATCH;
-        }
-        else {
-            pSBCGamepad->wButtons[0] |= CXBX_SBC_GAMEPAD_W0_COCKPITHATCH;
-        }
-    }
-
-    if (pDIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_BACK) {//Toggle Switch ToggleFilterControl
-        if (pSBCGamepad->wButtons[2] & CXBX_SBC_GAMEPAD_W2_TOGGLEFILTERCONTROL) {
-            pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_TOGGLEFILTERCONTROL;
-        }
-        else {
-            pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_TOGGLEFILTERCONTROL;
-        }
-    }
-
-    if (pDIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_DPAD_UP) {//Toggle Switch ToggleOxygenSupply
-        if (pSBCGamepad->wButtons[2] & CXBX_SBC_GAMEPAD_W2_TOGGLEOXYGENSUPPLY) {
-            pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_TOGGLEOXYGENSUPPLY;
-        }
-        else {
-            pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_TOGGLEOXYGENSUPPLY;
-        }
-    }
-
-    if (pDIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_DPAD_DOWN) {//Toggle Switch ToggleBuffreMaterial
-        if (pSBCGamepad->wButtons[2] & CXBX_SBC_GAMEPAD_W2_TOGGLEBUFFREMATERIAL) {
-            pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_TOGGLEBUFFREMATERIAL;
-        }
-        else {
-            pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_TOGGLEBUFFREMATERIAL;
-        }
-    }
-
-    if (pDIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_DPAD_LEFT) {//Toggle Switch ToggleVTLocation
-        if (pSBCGamepad->wButtons[2] & CXBX_SBC_GAMEPAD_W2_TOGGLEVTLOCATION) {
-            pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_TOGGLEVTLOCATION;
-        }
-        else {
-            pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_TOGGLEVTLOCATION;
-        }
-    }
-
-    if (pDIGamepad->wButtons & CXBX_XINPUT_GAMEPAD_DPAD_RIGHT) {//Toggle Switch ToggleFuelFlowRate
-        if (pSBCGamepad->wButtons[2] & CXBX_SBC_GAMEPAD_W2_TOGGLEFUELFLOWRATE) {
-            pSBCGamepad->wButtons[2] &= ~CXBX_SBC_GAMEPAD_W2_TOGGLEFUELFLOWRATE;
-        }
-        else {
-            pSBCGamepad->wButtons[2] |= CXBX_SBC_GAMEPAD_W2_TOGGLEFUELFLOWRATE;
-        }
-    }
-    //reserve the SBCGamepad to keep the status of GearLever and Toggole Switches.
-    XboxSBCGamepad = *pSBCGamepad;
-}
 // ******************************************************************
 // * patch: XInputGetState
 // ******************************************************************
@@ -751,20 +722,7 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XInputGetState)
 		LOG_FUNC_ARG_OUT(pState)
 		LOG_FUNC_END;
 
-    dword_xt ret = ERROR_DEVICE_NOT_CONNECTED;
-    PCXBX_CONTROLLER_HOST_BRIDGE Device = (PCXBX_CONTROLLER_HOST_BRIDGE)hDevice;
-    int Port = Device->XboxPort;
-    if (g_XboxControllerHostBridge[Port].hXboxDevice == hDevice) {
-        if (!g_XboxControllerHostBridge[Port].bPendingRemoval) {
-            g_XboxControllerHostBridge[Port].bIoInProgress = true;
-            if (g_InputDeviceManager.UpdateXboxPortInput(Port, g_XboxControllerHostBridge[Port].InState, DIRECTION_IN, to_underlying(g_XboxControllerHostBridge[Port].XboxType))) {
-                pState->dwPacketNumber = g_XboxControllerHostBridge[Port].XboxDeviceInfo.dwPacketNumber++;
-            }
-            memcpy((void*)&pState->Gamepad, g_XboxControllerHostBridge[Port].InState, sizeof(pState->Gamepad));
-            g_XboxControllerHostBridge[Port].bIoInProgress = false;
-            ret = ERROR_SUCCESS;
-        }
-    }
+	dword_xt ret = CxbxImpl_XInputHandler<false>(hDevice, pState);
     
 	RETURN(ret);
 }
@@ -785,11 +743,11 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XInputSetState)
 		LOG_FUNC_ARG(pFeedback)
 		LOG_FUNC_END;
 
-    PCXBX_CONTROLLER_HOST_BRIDGE Device = (PCXBX_CONTROLLER_HOST_BRIDGE)hDevice;
-    int Port = Device->XboxPort;
-    if (g_XboxControllerHostBridge[Port].hXboxDevice == hDevice && !g_XboxControllerHostBridge[Port].bPendingRemoval) {
+	DeviceState *dev = static_cast<DeviceState *>(hDevice);
+	int port = dev->port_idx;
+    if (g_devs[port].info.hHandle == hDevice && !g_devs[port].bPendingRemoval) {
         pFeedback->Header.dwStatus = ERROR_IO_PENDING;
-        g_InputDeviceManager.UpdateXboxPortInput(Port, (void*)&pFeedback->Rumble, DIRECTION_OUT, to_underlying(g_XboxControllerHostBridge[Port].XboxType));
+        g_InputDeviceManager.UpdateXboxPortInput(port, (void*)&pFeedback->Rumble, DIRECTION_OUT, to_underlying(g_devs[port].type));
         pFeedback->Header.dwStatus = ERROR_SUCCESS;
         if (pFeedback->Header.hEvent != NULL &&
             ObReferenceObjectByHandle(pFeedback->Header.hEvent, &xbox::ExEventObjectType, (PVOID*)&pFeedback->Header.IoCompletedEvent) == ERROR_SUCCESS) {
@@ -1170,7 +1128,7 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XLaunchNewImageA)
 		if (lpTitlePath == xbox::zeroptr)
 		{
 			// If no path is specified, then the xbe is rebooting to dashboard
-			char szDashboardPath[MAX_PATH] = { 0 };
+			char szDashboardPath[xbox::max_path] = { 0 };
 			XboxDevice* rootDevice = CxbxDeviceByDevicePath(DeviceHarddisk0Partition2);
 			if (rootDevice != nullptr)
 				sprintf(szDashboardPath, "%s\\xboxdash.xbe", rootDevice->HostDevicePath.c_str());
@@ -1370,18 +1328,44 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XMountMUA)
 	PCHAR pchDrive               
 )
 {
-
-
 	LOG_FUNC_BEGIN
 		LOG_FUNC_ARG(dwPort)
 		LOG_FUNC_ARG(dwSlot)
 		LOG_FUNC_ARG(pchDrive)
 		LOG_FUNC_END;
 
-	// TODO: Actually allow memory card emulation? This might make transferring
-	// game saves a bit easier if the memory card directory was configurable. =]
+	std::lock_guard lock(g_MuLock);
 
-	RETURN(E_FAIL);
+	char lett = MuPort2Lett(dwPort, dwSlot);
+	if (MuIsMounted(lett)) {
+		if (pchDrive != zeroptr) {
+			*pchDrive = lett;
+		}
+		RETURN(ERROR_ALREADY_ASSIGNED);
+	}
+
+	char title_id_buff[9];
+	std::sprintf(title_id_buff, "%08lx", CxbxKrnl_Xbe->m_Certificate.dwTitleId);
+	std::string mu_path_str(DrivePrefix + lett + ":");
+	std::string mu_dev_str(DeviceMU + std::to_string(MuPort2Idx(dwPort, dwSlot)));
+	ANSI_STRING mu_dev, mu_path;
+	RtlInitAnsiString(&mu_path, mu_path_str.data());
+	RtlInitAnsiString(&mu_dev, mu_dev_str.data());
+	mu_dev_str += '\\';
+
+	ntstatus_xt status = XB_TRMP(XapiMapLetterToDirectory)(&mu_path, &mu_dev, title_id_buff, 1,
+		reinterpret_cast<const char16_t *>(CxbxKrnl_Xbe->m_Certificate.wsTitleName), 0);
+
+	if (!nt_success(status)) {
+		RETURN(RtlNtStatusToDosError(status));
+	}
+
+	MuSetMounted(lett);
+	if (pchDrive != zeroptr) {
+		*pchDrive = lett;
+	}
+
+	RETURN(ERROR_SUCCESS);
 }
 
 // ******************************************************************
@@ -1430,18 +1414,172 @@ xbox::dword_xt WINAPI xbox::EMUPATCH(XMountMURootA)
 	PCHAR pchDrive               
 )
 {
-
-
 	LOG_FUNC_BEGIN
 		LOG_FUNC_ARG(dwPort)
 		LOG_FUNC_ARG(dwSlot)
 		LOG_FUNC_ARG(pchDrive)
 		LOG_FUNC_END;
 
-	// TODO: The params are probably wrong...
-	LOG_UNIMPLEMENTED();
+	std::lock_guard lock(g_MuLock);
+
+	char_xt lett = MuPort2Lett(dwPort, dwSlot);
+	if (MuIsMounted(lett)) {
+		if (pchDrive != zeroptr) {
+			*pchDrive = lett;
+		}
+		RETURN(ERROR_ALREADY_ASSIGNED);
+	}
+
+	std::string mu_path_str(DrivePrefix + lett + ":");
+	std::string mu_dev_str(DeviceMU + std::to_string(MuPort2Idx(dwPort, dwSlot)));
+	ANSI_STRING mu_dev, mu_path;
+	RtlInitAnsiString(&mu_path, mu_path_str.data());
+	RtlInitAnsiString(&mu_dev, mu_dev_str.data());
+	ntstatus_xt status = IoCreateSymbolicLink(&mu_path, &mu_dev);
+
+	if (!nt_success(status)) {
+		if (pchDrive != zeroptr) {
+			*pchDrive = 0;
+		}
+		RETURN(RtlNtStatusToDosError(status));
+	}
+
+	MuSetMounted(lett);
+	if (pchDrive != zeroptr) {
+		*pchDrive = lett;
+	}
 
 	RETURN(ERROR_SUCCESS);
+}
+
+// ******************************************************************
+// * patch: XUnmountMU
+// ******************************************************************
+xbox::dword_xt WINAPI xbox::EMUPATCH(XUnmountMU)
+(
+	dword_xt dwPort,
+	dword_xt dwSlot
+)
+{
+	LOG_FUNC_BEGIN
+		LOG_FUNC_ARG(dwPort)
+		LOG_FUNC_ARG(dwSlot)
+	LOG_FUNC_END;
+
+	std::lock_guard lock(g_MuLock);
+
+	char_xt lett = MuPort2Lett(dwPort, dwSlot);
+	if (!MuIsMounted(lett)) {
+		RETURN(ERROR_INVALID_DRIVE);
+	}
+
+	if (*g_XapiAltLett_MU == lett) {
+		XB_TRMP(XUnmountAlternateTitleA)('X');
+	}
+
+	std::string mu_path_str(DrivePrefix + lett + ":");
+	ANSI_STRING mu_path;
+	RtlInitAnsiString(&mu_path, mu_path_str.data());
+	ntstatus_xt status = IoDeleteSymbolicLink(&mu_path);
+
+	if (!nt_success(status)) {
+		RETURN(RtlNtStatusToDosError(status));
+	}
+
+	MuClearMounted(lett);
+	g_io_mu_metadata->flush(static_cast<wchar_t>(lett));
+
+	RETURN(ERROR_SUCCESS);
+}
+
+// ******************************************************************
+// * patch: XReadMUMetaData
+// ******************************************************************
+xbox::dword_xt WINAPI xbox::EMUPATCH(XReadMUMetaData)
+(
+	IN dword_xt dwPort,
+	IN dword_xt dwSlot,
+	IN LPVOID lpBuffer,
+	IN dword_xt dwByteOffset,
+	IN dword_xt dwNumberOfBytesToRead
+)
+{
+	LOG_FUNC_BEGIN
+		LOG_FUNC_ARG(dwPort)
+		LOG_FUNC_ARG(dwSlot)
+		LOG_FUNC_ARG(lpBuffer)
+		LOG_FUNC_ARG(dwByteOffset)
+		LOG_FUNC_ARG(dwNumberOfBytesToRead)
+		LOG_FUNC_END;
+
+	// NOTE: in reality, this function should actually use IoSynchronousFsdRequest to read the metadata of the MU. Unfortunately,
+	// that requires kernel support for device objects, which when this was implemented, was non-existent. So, we instead cheat
+	// and use NtFsControlFile to perform the same action.
+
+	std::lock_guard lock(g_MuLock);
+
+	bool unmount = false;
+	char_xt lett = MuPort2Lett(dwPort, dwSlot);
+	if (!MuIsMounted(lett)) {
+		unmount = true;
+		dword_xt ret = EMUPATCH(XMountMURootA(dwPort, dwSlot, &lett));
+		if (ret != ERROR_SUCCESS) {
+			RETURN(ret);
+		}
+	}
+
+	OBJECT_ATTRIBUTES obj;
+	std::string mu_path_str(DrivePrefix + lett + ":");
+	ANSI_STRING mu_path;
+	RtlInitAnsiString(&mu_path, mu_path_str.data());
+	XB_InitializeObjectAttributes(&obj, &mu_path, obj_case_insensitive, ObDosDevicesDirectory());
+
+	HANDLE handle;
+	IO_STATUS_BLOCK io_status_block;
+	ntstatus_xt status = NtOpenFile(&handle,
+		SYNCHRONIZE | GENERIC_READ,
+		&obj,
+		&io_status_block,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		FILE_SYNCHRONOUS_IO_ALERT);
+
+	if (nt_success(status)) {
+		fatx_volume_metadata volume;
+		volume.offset = dwByteOffset;
+		volume.length = dwNumberOfBytesToRead;
+		volume.buffer = new char[dwNumberOfBytesToRead];
+
+		status = NtFsControlFile(handle,
+			zeroptr,
+			zeroptr,
+			zeroptr,
+			&io_status_block,
+			fsctl_read_fatx_metadata,
+			&volume,
+			sizeof(volume),
+			zeroptr,
+			0);
+
+		if (nt_success(status)) {
+			std::memcpy(lpBuffer, volume.buffer, dwNumberOfBytesToRead);
+			status = status_success;
+		}
+		else {
+			status = status_unrecognized_volume;
+		}
+
+		delete[] volume.buffer;
+		NtClose(handle);
+	}
+	else {
+		status = status_unrecognized_volume;
+	}
+
+	if (unmount) {
+		EMUPATCH(XUnmountMU(dwPort, dwSlot));
+	}
+
+	RETURN(RtlNtStatusToDosError(status));
 }
 
 // ******************************************************************

@@ -33,12 +33,15 @@
 #include "core\kernel\exports\EmuKrnlKe.h"
 #include "core\kernel\support\EmuFS.h" // For fs_instruction_t
 #include "core\kernel\init\CxbxKrnl.h"
-#include "core\kernel\memory-manager\VMManager.h"
 #include "Logging.h"
 
 #include <windows.h>
 #include <cstdio>
 #include <vector>
+
+#ifdef RtlZeroMemory
+#undef RtlZeroMemory
+#endif
 
 // NT_TIB (Thread Information Block) offsets - see https://www.microsoft.com/msj/archive/S2CE.aspx
 #define TIB_ExceptionList         offsetof(NT_TIB, ExceptionList)         // = 0x00/0
@@ -183,6 +186,39 @@ void EmuKeSetPcr(xbox::KPCR *Pcr)
 	// Xbox thread.
 	//
 	__writefsdword(TIB_ArbitraryDataSlot, (DWORD)Pcr);
+}
+
+void EmuKeFreePcr()
+{
+	// NOTE: don't call KeGetPcr because that one creates a new pcr for the thread when __readfsdword returns nullptr, which we don't want
+	xbox::PKPCR Pcr = reinterpret_cast<xbox::PKPCR>(__readfsdword(TIB_ArbitraryDataSlot));
+
+	if (Pcr) {
+		// tls can be nullptr
+		xbox::PVOID Dummy;
+		xbox::ulong_xt Size;
+		xbox::ntstatus_xt Status;
+		if (Pcr->NtTib.StackBase) {
+			// NOTE: the tls pointer was increased by 12 bytes to enforce the 16 bytes alignment, so adjust it to reach the correct pointer
+			// that was allocated by xbox::NtAllocateVirtualMemory
+			Dummy = static_cast<xbox::PBYTE>(Pcr->NtTib.StackBase) - 12;
+			Size = xbox::zero;
+			Status = xbox::NtFreeVirtualMemory(&Dummy, &Size, XBOX_MEM_RELEASE); // free tls
+			assert(Status == xbox::status_success);
+		}
+		Dummy = Pcr->Prcb->CurrentThread;
+		Size = xbox::zero;
+		Status = xbox::NtFreeVirtualMemory(&Dummy, &Size, XBOX_MEM_RELEASE); // free ethread
+		assert(Status == xbox::status_success);
+		Dummy = Pcr;
+		Size = xbox::zero;
+		Status = xbox::NtFreeVirtualMemory(&Dummy, &Size, XBOX_MEM_RELEASE); // free pcr
+		assert(Status == xbox::status_success);
+		__writefsdword(TIB_ArbitraryDataSlot, NULL);
+	}
+	else {
+		EmuLog(LOG_LEVEL::WARNING, "__readfsdword in EmuKeFreePcr returned nullptr: was this called from a non-xbox thread?");
+	}
 }
 
 __declspec(naked) void EmuFS_RefreshKPCR()
@@ -514,6 +550,8 @@ void EmuInitFS()
 void EmuGenerateFS(Xbe::TLS *pTLS, void *pTLSData)
 {
 	void *pNewTLS = nullptr;
+	xbox::PVOID base;
+	xbox::ulong_xt size;
 
 	// Be aware that TLS might be absent (for example in homebrew "Wolf3d-xbox")
 	if (pTLS != nullptr) {
@@ -533,8 +571,12 @@ void EmuGenerateFS(Xbe::TLS *pTLS, void *pTLSData)
 			}
 
 			/* + HACK: extra safety padding 0x100 */
-			pNewTLS = (void*)g_VMManager.AllocateZeroed(dwCopySize + dwZeroSize + 0x100 + 0xC);
-			/* Skip the first 12 bytes so that TLSData will be 16 byte aligned (addr returned by AllocateZeroed is 4K aligned) */
+			base = xbox::zeroptr;
+			size = dwCopySize + dwZeroSize + 0x100 + 0xC;
+			xbox::NtAllocateVirtualMemory(&base, 0, &size, XBOX_MEM_RESERVE | XBOX_MEM_COMMIT, XBOX_PAGE_READWRITE);
+			pNewTLS = (void*)base;
+			xbox::RtlZeroMemory(pNewTLS, dwCopySize + dwZeroSize + 0x100 + 0xC);
+			/* Skip the first 12 bytes so that TLSData will be 16 byte aligned (addr returned by NtAllocateVirtualMemory is 4K aligned) */
 			pNewTLS = (uint8_t*)pNewTLS + 12;
 
 			if (dwCopySize > 0) {
@@ -579,7 +621,11 @@ void EmuGenerateFS(Xbe::TLS *pTLS, void *pTLSData)
 	}
 
 	// Allocate the xbox KPCR structure
-	xbox::KPCR *NewPcr = (xbox::KPCR*)g_VMManager.AllocateZeroed(sizeof(xbox::KPCR));
+	base = xbox::zeroptr;
+	size = sizeof(xbox::KPCR);
+	xbox::NtAllocateVirtualMemory(&base, 0, &size, XBOX_MEM_RESERVE | XBOX_MEM_COMMIT, XBOX_PAGE_READWRITE);
+	xbox::KPCR *NewPcr = (xbox::KPCR*)base;
+	xbox::RtlZeroMemory(NewPcr, sizeof(xbox::KPCR));
 	xbox::NT_TIB *XbTib = &(NewPcr->NtTib);
 	xbox::PKPRCB Prcb = &(NewPcr->PrcbData);
 	// Note : As explained above (at EmuKeSetPcr), Cxbx cannot allocate one NT_TIB and KPRCB
@@ -625,7 +671,11 @@ void EmuGenerateFS(Xbe::TLS *pTLS, void *pTLSData)
 
 	// Initialize a fake PrcbData.CurrentThread 
 	{
-		xbox::ETHREAD *EThread = (xbox::ETHREAD*)g_VMManager.AllocateZeroed(sizeof(xbox::ETHREAD)); // Clear, to prevent side-effects on random contents
+		base = xbox::zeroptr;
+		size = sizeof(xbox::ETHREAD);
+		xbox::NtAllocateVirtualMemory(&base, 0, &size, XBOX_MEM_RESERVE | XBOX_MEM_COMMIT, XBOX_PAGE_READWRITE);
+		xbox::ETHREAD *EThread = (xbox::ETHREAD*)base; // Clear, to prevent side-effects on random contents
+		xbox::RtlZeroMemory(EThread, sizeof(xbox::ETHREAD));
 
 		EThread->Tcb.TlsData = pNewTLS;
 		EThread->UniqueThread = GetCurrentThreadId();

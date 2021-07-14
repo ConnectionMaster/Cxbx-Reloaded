@@ -27,6 +27,7 @@
 
 #include "windows.h"
 #include "controllers/DlgDukeControllerConfig.h"
+#include "controllers/DlgSBControllerConfig.h"
 #include "resource/ResCxbx.h"
 #include "input\InputManager.h"
 #include "Logging.h"
@@ -41,6 +42,7 @@ static INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wPara
 LRESULT CALLBACK WindowsCtrlSubProcNumericFilter(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 HWND g_ChildWnd = NULL;
 static bool g_bHasOptChanges = false;
+static bool g_bHasInputChanges[4] = { false, false, false, false };
 
 
 void SyncInputSettings(int port_num, int dev_type, bool is_opt)
@@ -49,6 +51,8 @@ void SyncInputSettings(int port_num, int dev_type, bool is_opt)
 		if (!is_opt) {
 			// Sync updated input to kernel process to use run-time settings.
 			g_EmuShared->SetInputDevTypeSettings(&g_Settings->m_input_port[port_num].Type, port_num);
+			g_EmuShared->SetInputSlotTypeSettings(&g_Settings->m_input_port[port_num].SlotType[SLOT_TOP], port_num, SLOT_TOP);
+			g_EmuShared->SetInputSlotTypeSettings(&g_Settings->m_input_port[port_num].SlotType[SLOT_BOTTOM], port_num, SLOT_BOTTOM);
 
 			if (dev_type != to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID)) {
 				std::string dev_name = g_Settings->m_input_port[port_num].DeviceName;
@@ -63,25 +67,20 @@ void SyncInputSettings(int port_num, int dev_type, bool is_opt)
 						return false;
 					});
 				if (it != g_Settings->m_input_profiles[dev_type].end()) {
-					char controls_name[XBOX_CTRL_NUM_BUTTONS][30];
+					char controls_name[HIGHEST_NUM_BUTTONS][HOST_BUTTON_NAME_LENGTH];
 					for (int index = 0; index < dev_num_buttons[dev_type]; index++) {
 						strncpy(controls_name[index], it->ControlList[index].c_str(), 30);
 					}
-					g_EmuShared->SetInputBindingsSettings(controls_name, XBOX_CTRL_NUM_BUTTONS, port_num);
+					g_EmuShared->SetInputBindingsSettings(controls_name, dev_num_buttons[dev_type], port_num);
 				}
 			}
 		}
 		else {
-			g_EmuShared->SetInputMoAxisSettings(g_Settings->m_input_general.MoAxisRange);
-			g_EmuShared->SetInputMoWheelSettings(g_Settings->m_input_general.MoWheelRange);
+			g_EmuShared->SetInputGeneralSettings(&g_Settings->m_input_general);
 			port_num = PORT_INVALID;
 		}
-#if 0 // lle usb
-		ipc_send_kernel_update(IPC_UPDATE_KERNEL::CONFIG_INPUT_SYNC, PORT_DEC(Gui2XboxPortArray[port_num]),
-			reinterpret_cast<std::uintptr_t>(g_ChildWnd));
-#else
+
 		ipc_send_kernel_update(IPC_UPDATE_KERNEL::CONFIG_INPUT_SYNC, port_num, reinterpret_cast<std::uintptr_t>(g_ChildWnd));
-#endif
 	}
 }
 
@@ -92,11 +91,13 @@ void UpdateInputOpt(HWND hwnd)
 	g_Settings->m_input_general.MoAxisRange = std::stol(buffer);
 	SendMessage(GetDlgItem(hwnd, IDC_WHEEL_RANGE), WM_GETTEXT, 30, reinterpret_cast<LPARAM>(buffer));
 	g_Settings->m_input_general.MoWheelRange = std::stol(buffer);
+	LRESULT ret = SendMessage(GetDlgItem(hwnd, IDC_IGNORE_KBMO_UNFOCUS), BM_GETCHECK, 0, 0);
+	g_Settings->m_input_general.IgnoreKbMoUnfocus = (ret == BST_CHECKED);
 }
 
 void ShowInputConfig(HWND hwnd, HWND ChildWnd)
 {
-	g_InputDeviceManager.Initialize(true);
+	g_InputDeviceManager.Initialize(true, hwnd);
 	g_ChildWnd = ChildWnd;
 
 	// Show dialog box
@@ -114,11 +115,10 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 
 		for (int i = 0, j = 0; i != 4; i++) {
 			HWND hHandle = GetDlgItem(hWndDlg, IDC_DEVICE_PORT1 + i);
-			for (auto input : input_support_list) {
-				LRESULT index = SendMessage(hHandle, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(input.name));
-				SendMessage(hHandle, CB_SETITEMDATA, index,
-					to_underlying(input.type));
-				if (g_Settings->m_input_port[i].Type == to_underlying(input.type)) {
+			for (auto dev_type : input_support_list) {
+				LRESULT index = SendMessage(hHandle, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(GetInputDeviceName(to_underlying(dev_type)).c_str()));
+				SendMessage(hHandle, CB_SETITEMDATA, index, to_underlying(dev_type));
+				if (g_Settings->m_input_port[i].Type == to_underlying(dev_type)) {
 					SendMessage(hHandle, CB_SETCURSEL, index, 0);
 					if (g_Settings->m_input_port[i].Type == to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID)) {
 						EnableWindow(GetDlgItem(hWndDlg, IDC_CONFIGURE_PORT1 + i), FALSE);
@@ -137,9 +137,14 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 				std::to_string(g_Settings->m_input_general.MoAxisRange).c_str() :
 				std::to_string(g_Settings->m_input_general.MoWheelRange).c_str()));
 		}
+		SendMessage(GetDlgItem(hWndDlg, IDC_IGNORE_KBMO_UNFOCUS), BM_SETCHECK, static_cast<WPARAM>(g_Settings->m_input_general.IgnoreKbMoUnfocus), 0);
 
-		// Reset option changes flag
+		// Reset option/input changes flag
 		g_bHasOptChanges = false;
+		g_bHasInputChanges[0] = false;
+		g_bHasInputChanges[1] = false;
+		g_bHasInputChanges[2] = false;
+		g_bHasInputChanges[3] = false;
 	}
 	break;
 
@@ -147,7 +152,24 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 	{
 		if (g_bHasOptChanges) {
 			UpdateInputOpt(hWndDlg);
+			g_InputDeviceManager.UpdateOpt(true);
 			SyncInputSettings(0, 0, true);
+		}
+
+		for (int port = PORT_1; port <= PORT_4; port++) {
+			if (g_bHasInputChanges[port]) {
+				HWND hHandle = GetDlgItem(hWndDlg, IDC_DEVICE_PORT1 + port);
+				int DeviceType = SendMessage(hHandle, CB_GETITEMDATA, SendMessage(hHandle, CB_GETCURSEL, 0, 0), 0);
+				g_Settings->m_input_port[port].Type = DeviceType;
+				if (DeviceType != to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE) &&
+					DeviceType != to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S)) {
+					// Forcefully set the child devices to none. This will happen if the user sets MUs in the controller dialog but
+					// then they set the parent device to a device that cannot support them in the input dialog
+					g_Settings->m_input_port[port].SlotType[SLOT_TOP] = to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID);
+					g_Settings->m_input_port[port].SlotType[SLOT_BOTTOM] = to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID);
+				}
+				SyncInputSettings(port, DeviceType, false);
+			}
 		}
 
 		g_InputDeviceManager.Shutdown();
@@ -174,16 +196,21 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 				assert(port != -1);
 				HWND hHandle = GetDlgItem(hWndDlg, IDC_DEVICE_PORT1 + port);
 				int DeviceType = SendMessage(hHandle, CB_GETITEMDATA, SendMessage(hHandle, CB_GETCURSEL, 0, 0), 0);
-				if (g_bHasOptChanges) {
-					UpdateInputOpt(hWndDlg);
-					g_InputDeviceManager.UpdateOpt(true);
-				}
+				assert(DeviceType > to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID) &&
+					DeviceType < to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX));
 
 				switch (DeviceType)
 				{
 				case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE): 
-				case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S): {
+				case to_underlying(XBOX_INPUT_DEVICE::MS_CONTROLLER_S):
+				case to_underlying(XBOX_INPUT_DEVICE::ARCADE_STICK): {
 					DialogBoxParam(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDD_XID_DUKE_CFG), hWndDlg, DlgXidControllerConfigProc,
+						(DeviceType << 8) | port);
+				}
+				break;
+
+				case to_underlying(XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER): {
+					DialogBoxParam(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDD_SBC_CFG), hWndDlg, DlgSBControllerConfigProc,
 						(DeviceType << 8) | port);
 				}
 				break;
@@ -191,11 +218,8 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 				default:
 					break;
 				}
-				assert(DeviceType > to_underlying(XBOX_INPUT_DEVICE::DEVICE_INVALID) &&
-					DeviceType < to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX));
 
-				// Also inform the kernel process if it exists
-				SyncInputSettings(port, DeviceType, false);
+				g_bHasInputChanges[port] = true;
 			}
 		}
 		break;
@@ -222,10 +246,7 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 					EnableWindow(GetDlgItem(hWndDlg, IDC_CONFIGURE_PORT1 + port), TRUE);
 				}
 
-				g_Settings->m_input_port[port].Type = dev_type;
-
-				// Also inform the kernel process if it exists
-				SyncInputSettings(port, dev_type, false);
+				g_bHasInputChanges[port] = true;
 			}
 		}
 		break;
@@ -237,6 +258,16 @@ INT_PTR CALLBACK DlgInputConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 				g_bHasOptChanges = true;
 			}
 		}
+		break;
+
+		case IDC_IGNORE_KBMO_UNFOCUS:
+		{
+			if (HIWORD(wParam) == BN_CLICKED) {
+				g_bHasOptChanges = true;
+			}
+		}
+		break;
+
 		}
 	}
 	break;

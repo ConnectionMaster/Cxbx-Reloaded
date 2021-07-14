@@ -28,7 +28,6 @@
 
 #define LOG_PREFIX CXBXR_MODULE::HAL
 
-
 #include <core\kernel\exports\xboxkrnl.h> // For HalReadSMCTrayState, etc.
 #include <Shlwapi.h> // For PathRemoveFileSpec()
 #include "Logging.h" // For LOG_FUNC()
@@ -45,8 +44,6 @@
 #include "devices\SMCDevice.h" // For SMC_COMMAND_SCRATCH
 #include "common/util/strConverter.hpp" // for utf16_to_ascii
 #include "core\kernel\memory-manager\VMManager.h"
-#include "common/util/cliConfig.hpp"
-#include "common/CxbxDebugger.h"
 
 #include <algorithm> // for std::replace
 #include <locale>
@@ -488,13 +485,17 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 {
 	LOG_FUNC_ONE_ARG(Routine);
 
+	bool is_reboot = false;
+
 	switch (Routine) {
 	case ReturnFirmwareHalt:
 		CxbxKrnlCleanup("Emulated Xbox is halted");
 		break;
 
 	case ReturnFirmwareReboot:
-		LOG_UNIMPLEMENTED(); // fall through
+		LOG_UNIMPLEMENTED();
+		[[fallthrough]];
+
 	case ReturnFirmwareQuickReboot:
 	{
 		if (xbox::LaunchDataPage == NULL)
@@ -536,7 +537,6 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 
 
 			std::string TitlePath = xbox::LaunchDataPage->Header.szLaunchPath;
-			char szWorkingDirectoy[MAX_PATH];
 
 			// If the title path starts with a semicolon, remove it
 			if (TitlePath.length() > 0 && TitlePath[0] == ';') {
@@ -544,40 +544,17 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 			}
 
 			// If the title path was an empty string, we need to launch the dashboard
+			// Or in the case of Chihiro: SEGABOOT
 			if (TitlePath.length() == 0) {
-				TitlePath = DeviceHarddisk0Partition2 + "\\xboxdash.xbe";
-			}
-
-			std::string XbePath = TitlePath;
-			// Convert Xbox XBE Path to Windows Path
-			{
-				HANDLE rootDirectoryHandle = nullptr;
-				std::wstring wXbePath;
-				// We pretend to come from NtCreateFile to force symbolic link resolution
-				CxbxConvertFilePath(TitlePath, wXbePath, &rootDirectoryHandle, "NtCreateFile");
-
-				// Convert Wide String as returned by above to a string, for XbePath
-				XbePath = utf16_to_ascii(wXbePath.c_str());
-
-				// If the rootDirectoryHandle is not null, we have a relative path
-				// We need to prepend the path of the root directory to get a full DOS path
-				if (rootDirectoryHandle != nullptr) {
-					char directoryPathBuffer[MAX_PATH];
-					GetFinalPathNameByHandle(rootDirectoryHandle, directoryPathBuffer, MAX_PATH, VOLUME_NAME_DOS);
-					XbePath = directoryPathBuffer + std::string("\\") + XbePath;
-
-					// Trim \\?\ from the output string, as we want the raw DOS path, not NT path
-					// We can do this always because GetFinalPathNameByHandle ALWAYS returns this format
-					// Without exception
-					XbePath.erase(0, 4);
+				if (g_bIsChihiro) {
+					TitlePath = DevicePrefix + "\\" + MediaBoardRomFile;
+				}
+				else {
+					TitlePath = DeviceHarddisk0Partition2 + "\\xboxdash.xbe";
 				}
 			}
 
-			// Determine Working Directory
-			{
-				strncpy_s(szWorkingDirectoy, XbePath.c_str(), MAX_PATH);
-				PathRemoveFileSpec(szWorkingDirectoy);
-			}
+			std::string& XbePath = CxbxConvertXboxToHostPath(TitlePath);
 
 			// Relaunch Cxbx, to load another Xbe
 			{
@@ -585,55 +562,14 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 				g_EmuShared->GetBootFlags(&QuickReboot);
 				QuickReboot |= BOOT_QUICK_REBOOT;
 				g_EmuShared->SetBootFlags(&QuickReboot);
+				is_reboot = true;
 
 				g_VMManager.SavePersistentMemory();
 
 				// Some titles (Xbox Dashboard and retail/demo discs) use ";" as a current directory path seperator
 				// This process is handled during initialization. No special handling here required.
 
-				cli_config::SetLoad(XbePath);
-
-				bool Debugging{ false };
-				g_EmuShared->GetDebuggingFlag(&Debugging);
-
-				if (Debugging)
-				{
-					std::string cliCommands;
-					if (!cli_config::GenCMD(cliCommands))
-					{
-						CxbxKrnlCleanup("Could not launch %s", XbePath.c_str());
-					}
-
-					CxbxDebugger::ReportNewTarget(cliCommands.c_str());
-
-					// The debugger will execute this process
-				}
-				else
-				{
-					if (!CxbxExec(false, nullptr, false))
-					{
-						CxbxKrnlCleanup("Could not launch %s", XbePath.c_str());
-					}
-				}
-
-				// This is a requirement to have shared memory buffers remain alive and transfer to new emulation process.
-				unsigned int retryAttempt = 0;
-				unsigned int curProcID = 0;
-				unsigned int oldProcID = GetCurrentProcessId();
-				while(true) {
-					std::this_thread::sleep_for(std::chrono::milliseconds(100));
-					g_EmuShared->GetKrnlProcID(&curProcID);
-					// Break when new emulation process has take over.
-					if (curProcID != oldProcID) {
-						break;
-					}
-					retryAttempt++;
-					// Terminate after 5 seconds of failure.
-					if (retryAttempt >= (5 * (1000 / 100))) {
-						PopupError(nullptr, "Could not reboot; New emulation process did not take over.");
-						break;
-					}
-				}
+				CxbxLaunchNewXbe(XbePath);
 
 			}
 		}
@@ -650,10 +586,7 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 
 		g_VMManager.SavePersistentMemory();
 
-		cli_config::SetLoad(szFilePath_Xbe);
-		if (!CxbxExec(false, nullptr, false)) {
-			CxbxKrnlCleanup("Could not launch %s", szFilePath_Xbe);
-		}
+		CxbxLaunchNewXbe(szFilePath_Xbe);
 		break;
 	}
 
@@ -665,7 +598,7 @@ XBSYSAPI EXPORTNUM(49) xbox::void_xt DECLSPEC_NORETURN NTAPI xbox::HalReturnToFi
 		LOG_UNIMPLEMENTED();
 	}
 
-	EmuShared::Cleanup();
+	CxbxKrnlShutDown(is_reboot);
 	TerminateProcess(GetCurrentProcess(), EXIT_SUCCESS);
 }
 

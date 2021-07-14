@@ -37,17 +37,36 @@
 #undef SetPort
 #endif
 
+#define PORT_INVALID     -1
+#define PORT_1            0
+#define PORT_2            1
+#define PORT_3            2
+#define PORT_4            3
+#define XBOX_NUM_PORTS    4
+
+#define SLOT_TOP             0
+#define SLOT_BOTTOM          1
+#define XBOX_CTRL_NUM_SLOTS  2
+
+#define CTRL_OFFSET 0
+#define MU_OFFSET   4
+#define MAX_DEVS    (XBOX_NUM_PORTS + XBOX_CTRL_NUM_SLOTS * XBOX_NUM_PORTS)
+
 extern int dev_num_buttons[to_underlying(XBOX_INPUT_DEVICE::DEVICE_MAX)];
 
-typedef struct _input_controller {
-	XBOX_INPUT_DEVICE type;
-	const char* name;
-} input_controller;
+inline XBOX_INPUT_DEVICE input_support_list[] = {
+	XBOX_INPUT_DEVICE::DEVICE_INVALID,
+	XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE,
+	XBOX_INPUT_DEVICE::MS_CONTROLLER_S,
+	XBOX_INPUT_DEVICE::STEEL_BATTALION_CONTROLLER,
+	XBOX_INPUT_DEVICE::ARCADE_STICK,
+};
 
-static input_controller input_support_list[] = {
-	{ XBOX_INPUT_DEVICE::DEVICE_INVALID, "None" },
-	{ XBOX_INPUT_DEVICE::MS_CONTROLLER_DUKE, "MS Controller Duke" },
-	{ XBOX_INPUT_DEVICE::MS_CONTROLLER_S, "MS Controller S" },
+inline XBOX_INPUT_DEVICE slot_support_list[] = {
+	XBOX_INPUT_DEVICE::DEVICE_INVALID,
+	XBOX_INPUT_DEVICE::MEMORY_UNIT,
+	// Microphone
+	// Phantasy star online keyboard
 };
 
 #pragma pack(1)
@@ -67,16 +86,72 @@ struct XpadOutput {
 	uint16_t right_actuator_strength;
 };
 
+struct SBCInput {
+	uint16_t wButtons[3];
+	uint8_t  bPad1;
+	uint8_t  sAimingX;
+	uint8_t  bPad2;
+	uint8_t  sAimingY;
+	uint8_t  bPad3;
+	int8_t   sRotationLever;
+	uint8_t  bPad4;
+	int8_t   sSightChangeX;
+	uint8_t  bPad5;
+	int8_t   sSightChangeY;
+	uint8_t  bPad6;
+	uint8_t  wLeftPedal;
+	uint8_t  bPad7;
+	uint8_t  wMiddlePedal;
+	uint8_t  bPad8;
+	uint8_t  wRightPedal;
+	uint8_t  ucTunerDial;
+	uint8_t  ucGearLever;
+};
+
+struct SBCOutput {
+	uint8_t  LedState[20];
+};
+
 #pragma pack()
+
+union InputBuff {
+	XpadInput ctrl;
+	SBCInput sbc;
+};
+
+struct DeviceInfo {
+	xbox::HANDLE hHandle;      // device handle returned by xapi
+	bool bAutoPoll;            // autopoll on/off, as instructed by the title in XInputOpen
+	bool bAutoPollDefault;     // default autopoll value, depending on device type
+	uint8_t ucType;            // xapi type
+	uint8_t ucSubType;         // xapi subtype
+	uint8_t ucInputStateSize;  // input state size in bytes, does not include dwPacketNumber
+	uint8_t ucFeedbackSize;    // feedback size in bytes, does not include FeedbackHeader
+	uint32_t dwPacketNumber;
+	InputBuff buff;
+};
+
+struct DeviceState {
+	std::string port;
+	int port_idx;
+	XBOX_INPUT_DEVICE type;
+	bool bPendingRemoval;
+	bool bSignaled;
+	DeviceInfo info;
+	DeviceState *slots[XBOX_CTRL_NUM_SLOTS];
+	DeviceState *upstream;
+};
+
+extern DeviceState g_devs[MAX_DEVS];
 
 
 class InputDeviceManager
 {
 public:
-	void Initialize(bool is_gui);
+	void Initialize(bool is_gui, HWND hwnd);
 	void Shutdown();
 	// read/write the input/output from/to the device attached to the supplied xbox port
-	bool UpdateXboxPortInput(int usb_port, void* Buffer, int Direction, int xid_type);
+	bool UpdateXboxPortInput(int port, void *buffer, int direction, int type);
 	// add the device to the list of availble devices
 	void AddDevice(std::shared_ptr<InputDevice> Device);
 	// remove the device from the list of availble devices
@@ -90,22 +165,26 @@ public:
 	// find device from its sdl id
 	std::shared_ptr<InputDevice> FindDevice(SDL_JoystickID id) const;
 	// find device from its xbox port
-	std::shared_ptr<InputDevice> FindDevice(int usb_port, int dummy) const;
+	std::shared_ptr<InputDevice> FindDevice(std::string_view port) const;
 	// attach/detach guest devices to the emulated machine
-	void UpdateDevices(int port, bool ack);
+	void UpdateDevices(std::string_view port, bool ack);
 	// update input options
 	void UpdateOpt(bool is_gui);
+	// device hotplug event handler
+	void HotplugHandler(bool is_sdl);
 
 
 private:
 	// update input for an xbox controller
-	bool UpdateInputXpad(std::shared_ptr<InputDevice>& Device, void* Buffer, int Direction);
+	bool UpdateInputXpad(std::shared_ptr<InputDevice>& Device, void* Buffer, int Direction, const std::string &Port);
+	// update input for a Steel Battalion controller
+	bool UpdateInputSBC(std::shared_ptr<InputDevice>& Device, void* Buffer, int Direction, int Port_num, const std::string &Port);
 	// bind a host device to an emulated device
-	void BindHostDevice(int port, int usb_port, int type);
+	void BindHostDevice(int type, std::string_view port);
 	// connect a device to the emulated machine
-	void ConnectDevice(int port, int usb_port, int type);
+	void ConnectDevice(DeviceState *dev, DeviceState *upstream, int type, std::string_view port);
 	// disconnect a device from the emulated machine
-	void DisconnectDevice(int port, int usb_port, bool ack);
+	void DisconnectDevice(DeviceState *dev, std::string_view port, bool ack);
 
 	// all enumerated devices currently detected and supported
 	std::vector<std::shared_ptr<InputDevice>> m_Devices;
@@ -117,12 +196,14 @@ private:
 	std::thread m_PollingThread;
 	// used to indicate that the manager is shutting down
 	bool m_bPendingShutdown;
+	// handle of the rendering or the input gui window
+	HWND m_hwnd;
 };
 
 extern InputDeviceManager g_InputDeviceManager;
 
 // hle input functions
-bool ConstructHleInputDevice(int Type, int Port);
-void DestructHleInputDevice(int Port);
+void ConstructHleInputDevice(DeviceState *dev, DeviceState *upstream, int type, std::string_view port);
+void DestructHleInputDevice(DeviceState *dev);
 
 #endif

@@ -13,14 +13,14 @@ endif()
 
 set(SUBHOOK_TESTS OFF)
 set(SUBHOOK_INSTALL OFF)
-add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/subhook")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/subhook" EXCLUDE_FROM_ALL)
 
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/XbSymbolDatabase")
 
 # Not require since only include a header file
 #add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/simpleini")
 
-add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/SDL2")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/SDL2" EXCLUDE_FROM_ALL)
 
 if(${CMAKE_GENERATOR} MATCHES "Visual Studio ([^9]|[9][0-9])")
  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/import/cs_x86")
@@ -35,9 +35,11 @@ add_custom_target(misc-batch
   WORKING_DIRECTORY ${CXBXR_ROOT_DIR}
 )
 
+# Custom CMake projects since some import libraries doesn't have it.
+
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/libtom")
 
-#add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/vsbc")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/imgui")
 
 # Split the files into group for which project is likely
 # going to be used for both header and source files.
@@ -58,11 +60,12 @@ file (GLOB CXBXR_HEADER_COMMON
  "${CXBXR_ROOT_DIR}/src/common/Error.h"
  "${CXBXR_ROOT_DIR}/src/common/input/DInputKeyboardCodes.h"
  "${CXBXR_ROOT_DIR}/src/common/input/DInputKeyboardMouse.h"
- "${CXBXR_ROOT_DIR}/src/common/input/layout_xbox_controller.h"
+ "${CXBXR_ROOT_DIR}/src/common/input/layout_xbox_device.h"
  "${CXBXR_ROOT_DIR}/src/common/input/InputDevice.h"
  "${CXBXR_ROOT_DIR}/src/common/input/InputManager.h"
  "${CXBXR_ROOT_DIR}/src/common/input/SdlJoystick.h"
  "${CXBXR_ROOT_DIR}/src/common/input/XInputPad.h"
+ "${CXBXR_ROOT_DIR}/src/common/input/RawDevice.h"
  "${CXBXR_ROOT_DIR}/src/common/IPCHybrid.hpp"
  "${CXBXR_ROOT_DIR}/src/common/Logging.h"
  "${CXBXR_ROOT_DIR}/src/common/ReservedMemory.h"
@@ -98,6 +101,7 @@ file (GLOB CXBXR_HEADER_GUIv1
  "${CXBXR_ROOT_DIR}/src/common/input/EmuDevice.h"
  "${CXBXR_ROOT_DIR}/src/common/input/InputWindow.h"
  "${CXBXR_ROOT_DIR}/src/gui/controllers/DlgDukeControllerConfig.h"
+ "${CXBXR_ROOT_DIR}/src/gui/controllers/DlgSBControllerConfig.h"
  "${CXBXR_ROOT_DIR}/src/gui/DlgAbout.h"
  "${CXBXR_ROOT_DIR}/src/gui/DlgAudioConfig.h"
  "${CXBXR_ROOT_DIR}/src/gui/DlgInputConfig.h"
@@ -110,17 +114,36 @@ file (GLOB CXBXR_HEADER_GUIv1
 )
 
 # Emulator (module)
+file (GLOB CXBXR_HEADER_EMU_IMPORT
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_dx9.h"
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_opengl3.h"
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_win32.h"
+)
 file (GLOB CXBXR_HEADER_EMU
  "${CXBXR_ROOT_DIR}/src/common/AddressRanges.h"
  "${CXBXR_ROOT_DIR}/src/common/audio/converter.hpp"
  "${CXBXR_ROOT_DIR}/src/common/util/gloffscreen/glextensions.h"
  "${CXBXR_ROOT_DIR}/src/common/util/gloffscreen/gloffscreen.h"
- "${CXBXR_ROOT_DIR}/src/common/XADPCM.h"
+ "${CXBXR_ROOT_DIR}/src/common/audio/XADPCM.h"
  "${CXBXR_ROOT_DIR}/src/common/xbox/Logging.hpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/audio.hpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/ui.hpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/settings.h"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/video.hpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/video/RenderBase.hpp"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/CxbxPixelShaderTemplate.hlsl"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/CxbxVertexShaderTemplate.hlsl"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/Direct3D9.h"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionPixelShader.hlsl"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionPixelShader.hlsli"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionVertexShader.hlsl"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionVertexShaderState.hlsli"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/PixelShader.h"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/Shader.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/VertexShader.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/VertexShaderSource.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/WalkIndexBuffer.h"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/FixedFunctionState.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/ResourceTracker.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/XbConvert.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/XbD3D8Logging.h"
@@ -144,7 +167,6 @@ file (GLOB CXBXR_HEADER_EMU
  "${CXBXR_ROOT_DIR}/src/core/hle/Patches.hpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/XACTENG/XactEng.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/XAPI/Xapi.h"
- "${CXBXR_ROOT_DIR}/src/core/hle/XAPI/XapiCxbxr.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/XGRAPHIC/XGraphic.h"
  "${CXBXR_ROOT_DIR}/src/core/hle/XONLINE/XOnline.h"
  "${CXBXR_ROOT_DIR}/src/core/kernel/common/strings.hpp"
@@ -162,7 +184,7 @@ file (GLOB CXBXR_HEADER_EMU
  "${CXBXR_ROOT_DIR}/src/core/kernel/support/EmuNtDll.h"
  "${CXBXR_ROOT_DIR}/src/devices/ADM1032Device.h"
  "${CXBXR_ROOT_DIR}/src/devices/EEPROMDevice.h"
- "${CXBXR_ROOT_DIR}/src/devices/EmuNVNet.h"
+ "${CXBXR_ROOT_DIR}/src/devices/network/NVNetDevice.h"
  "${CXBXR_ROOT_DIR}/src/devices/LED.h"
  "${CXBXR_ROOT_DIR}/src/devices/MCPXDevice.h"
  "${CXBXR_ROOT_DIR}/src/devices/PCIBus.h"
@@ -191,6 +213,11 @@ file (GLOB CXBXR_HEADER_EMU
  "${CXBXR_ROOT_DIR}/src/devices/Xbox.h"
 )
 
+# filter hlsl files into its own list
+# excluding hlsli file(s)
+set(CXBXR_HEADER_HLSL ${CXBXR_HEADER_EMU})
+list(FILTER CXBXR_HEADER_HLSL INCLUDE REGEX ".*\\.hlsl$")
+
 # Common (GUI and Emulator)
 file (GLOB CXBXR_SOURCE_COMMON
  "${CXBXR_ROOT_DIR}/src/common/crypto/EmuDes.cpp"
@@ -205,6 +232,7 @@ file (GLOB CXBXR_SOURCE_COMMON
  "${CXBXR_ROOT_DIR}/src/common/input/InputManager.cpp"
  "${CXBXR_ROOT_DIR}/src/common/input/SdlJoystick.cpp"
  "${CXBXR_ROOT_DIR}/src/common/input/XInputPad.cpp"
+ "${CXBXR_ROOT_DIR}/src/common/input/RawDevice.cpp"
  "${CXBXR_ROOT_DIR}/src/common/Logging.cpp"
  "${CXBXR_ROOT_DIR}/src/common/Settings.cpp"
  "${CXBXR_ROOT_DIR}/src/common/Timer.cpp"
@@ -235,6 +263,7 @@ file (GLOB CXBXR_SOURCE_GUIv1
  "${CXBXR_ROOT_DIR}/src/common/input/EmuDevice.cpp"
  "${CXBXR_ROOT_DIR}/src/common/input/InputWindow.cpp"
  "${CXBXR_ROOT_DIR}/src/gui/controllers/DlgDukeControllerConfig.cpp"
+ "${CXBXR_ROOT_DIR}/src/gui/controllers/DlgSBControllerConfig.cpp"
  "${CXBXR_ROOT_DIR}/src/gui/DlgAbout.cpp"
  "${CXBXR_ROOT_DIR}/src/gui/DlgAudioConfig.cpp"
  "${CXBXR_ROOT_DIR}/src/gui/DlgInputConfig.cpp"
@@ -252,6 +281,11 @@ file (GLOB CXBXR_SOURCE_GUIv1
 file (GLOB CXBXR_KRNL_CPP
  "${CXBXR_ROOT_DIR}/src/core/kernel/init/CxbxKrnl.cpp"
 )
+file (GLOB CXBXR_SOURCE_EMU_IMPORT
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_dx9.cpp"
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_opengl3.cpp"
+ "${CXBXR_ROOT_DIR}/import/imgui/backends/imgui_impl_win32.cpp"
+)
 file (GLOB CXBXR_SOURCE_EMU
  "${CXBXR_KRNL_CPP}"
  "${CXBXR_ROOT_DIR}/src/common/AddressRanges.cpp"
@@ -260,12 +294,19 @@ file (GLOB CXBXR_SOURCE_EMU
  "${CXBXR_ROOT_DIR}/src/common/util/gloffscreen/gloffscreen_common.cpp"
  "${CXBXR_ROOT_DIR}/src/common/util/gloffscreen/gloffscreen_wgl.cpp"
  "${CXBXR_ROOT_DIR}/src/common/xbox/Logging.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/audio.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/ui.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/imgui/video.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/common/video/RenderBase.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/Direct3D9.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/PixelShader.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/RenderStates.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/Shader.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/TextureStates.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/VertexShader.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/VertexShaderSource.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/Direct3D9/WalkIndexBuffer.cpp"
+ "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/FixedFunctionState.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/ResourceTracker.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/XbConvert.cpp"
  "${CXBXR_ROOT_DIR}/src/core/hle/D3D8/XbD3D8Logging.cpp"
@@ -319,7 +360,7 @@ file (GLOB CXBXR_SOURCE_EMU
  "${CXBXR_ROOT_DIR}/src/core/kernel/support/EmuNtDll.cpp"
  "${CXBXR_ROOT_DIR}/src/devices/ADM1032Device.cpp"
  "${CXBXR_ROOT_DIR}/src/devices/EEPROMDevice.cpp"
- "${CXBXR_ROOT_DIR}/src/devices/EmuNVNet.cpp"
+ "${CXBXR_ROOT_DIR}/src/devices/network/NVNetDevice.cpp"
  "${CXBXR_ROOT_DIR}/src/devices/MCPXDevice.cpp"
  "${CXBXR_ROOT_DIR}/src/devices/PCIBus.cpp"
  "${CXBXR_ROOT_DIR}/src/devices/PCIDevice.cpp"
@@ -373,30 +414,59 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/cxbxr-ldr")
 
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/projects/cxbxr-emu")
 
-# Issues with compile (the same with develop branch) and
-# for some reason did not put the files into virtual folder?
-# Might need to put the list in the source folder for workaround fix.
-if(${CMAKE_GENERATOR} MATCHES "Visual Studio ([^9]|[9][0-9])")
-  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/src/CxbxDebugger")
-endif()
+set(cxbxr_INSTALL_files "COPYING" "README.md")
+
+# Cxbx-Reloaded project with third-party libraries
+set_target_properties(cxbx cxbxr-ldr cxbxr-emu misc-batch SDL2 subhook libXbSymbolDatabase libtommath libtomcrypt imgui
+ PROPERTIES FOLDER Cxbx-Reloaded
+)
 
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
  # Configure startup project
  set_property(DIRECTORY "${CMAKE_CURRENT_LIST_DIR}" PROPERTY VS_STARTUP_PROJECT cxbx)
 endif()
 
+# Check if generator is Visual Studio then enable Cxbxr-Debugger project.
+# Since C# is currently supported with Visual Studio for now.
 if(${CMAKE_GENERATOR} MATCHES "Visual Studio ([^9]|[9][0-9])")
-  set_target_properties(Tests_cs_x86
-   PROPERTIES EXCLUDE_FROM_ALL TRUE
-  )
+ # Issues with compile (the same with develop branch) and
+ # for some reason did not put the files into virtual folder?
+ # Might need to put the list in the source folder for workaround fix.
+ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/src/CxbxDebugger")
 
-  # Cxbx-Debugger project with third-party libraries
-  set_target_properties(cxbxr-debugger cs_x86 Tests_cs_x86 capstone-shared
-   PROPERTIES FOLDER Cxbx-Reloaded/debugger
-  )
+ set_target_properties(Tests_cs_x86
+  PROPERTIES EXCLUDE_FROM_ALL TRUE
+ )
+
+ # Cxbx-Debugger project with third-party libraries
+ set_target_properties(cxbxr-debugger cs_x86 Tests_cs_x86 capstone-shared
+  PROPERTIES FOLDER Cxbx-Reloaded/debugger
+ )
 endif()
 
-# Cxbx-Reloaded project with third-party libraries
-set_target_properties(cxbx cxbxr-ldr cxbxr-emu misc-batch subhook libXbSymbolDatabase libtommath libtomcrypt
- PROPERTIES FOLDER Cxbx-Reloaded
+install(FILES ${cxbxr_INSTALL_files}
+  DESTINATION bin
+)
+
+install(FILES
+ "${CMAKE_SOURCE_DIR}/src/core/hle/D3D8/Direct3D9/CxbxPixelShaderTemplate.hlsl"
+ "${CMAKE_SOURCE_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionPixelShader.hlsl"
+ "${CMAKE_SOURCE_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionPixelShader.hlsli"
+ "${CMAKE_SOURCE_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionVertexShaderState.hlsli"
+ "${CMAKE_SOURCE_DIR}/src/core/hle/D3D8/Direct3D9/FixedFunctionVertexShader.hlsl"
+ DESTINATION bin/hlsl
+)
+
+set(cxbxr_GLEW_DLL "${CMAKE_SOURCE_DIR}/import/glew-2.0.0/bin/Release/Win32/glew32.dll")
+
+install(PROGRAMS ${cxbxr_GLEW_DLL}
+  DESTINATION bin
+)
+
+install(PROGRAMS $<TARGET_FILE_DIR:cxbx>/${CMAKE_SHARED_LIBRARY_PREFIX}subhook${CMAKE_SHARED_LIBRARY_SUFFIX}
+  DESTINATION bin
+)
+
+install(PROGRAMS $<TARGET_FILE_DIR:cxbx>/${CMAKE_SHARED_LIBRARY_PREFIX}SDL2${CMAKE_SHARED_LIBRARY_SUFFIX}
+  DESTINATION bin
 )

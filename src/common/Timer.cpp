@@ -38,6 +38,35 @@
 #include <time.h>
 #endif
 
+// More precise sleep, but with increased CPU usage
+void SleepPrecise(std::chrono::steady_clock::time_point targetTime)
+{
+	using namespace std::chrono;
+	// If we don't need to wait, return right away
+
+	// TODO use waitable timers?
+	// TODO fetch the timer resolution to determine the sleep threshold?
+	// TODO adaptive wait? https://blat-blatnik.github.io/computerBear/making-accurate-sleep-function/
+
+	// Try to sleep for as much of the wait as we can
+	// to save CPU usage / power
+	// We expect sleep to overshoot, so give ourselves some extra time
+	// Note currently we ask Windows to give us 1ms timer resolution
+	constexpr auto sleepThreshold = 2ms; // Minimum remaining time before we attempt to use sleep
+
+	auto sleepFor = (targetTime - sleepThreshold) - steady_clock::now();
+	auto sleepMs = duration_cast<milliseconds>(sleepFor).count();
+
+	// Sleep if required
+	if (sleepMs >= 0) {
+		Sleep((DWORD)sleepMs);
+	}
+
+	// Spin wait
+	while (steady_clock::now() < targetTime) {
+		;
+	}
+}
 
 // Virtual clocks will probably become useful once LLE CPU is implemented, but for now we don't need them.
 // See the QEMUClockType QEMU_CLOCK_VIRTUAL of XQEMU for more info.
@@ -102,9 +131,13 @@ void ClockThread(TimerObject* Timer)
 	if (!Timer->Name.empty()) {
 		CxbxSetThreadName(Timer->Name.c_str());
 	}
-	if (Timer->CpuAffinity != nullptr) {
-		InitXboxThread(*Timer->CpuAffinity);
+	if (Timer->IsXboxTimer) {
+		InitXboxThread();
+		g_AffinityPolicy->SetAffinityXbox();
+	} else {
+		g_AffinityPolicy->SetAffinityOther();
 	}
+
 	NewExpireTime = GetNextExpireTime(Timer);
 
 	while (true) {
@@ -133,7 +166,7 @@ void Timer_Exit(TimerObject* Timer)
 }
 
 // Allocates the memory for the timer object
-TimerObject* Timer_Create(TimerCB Callback, void* Arg, std::string Name, unsigned long* Affinity)
+TimerObject* Timer_Create(TimerCB Callback, void* Arg, std::string Name, bool IsXboxTimer)
 {
 	std::lock_guard<std::mutex>lock(TimerMtx);
 	TimerObject* pTimer = new TimerObject;
@@ -142,8 +175,8 @@ TimerObject* Timer_Create(TimerCB Callback, void* Arg, std::string Name, unsigne
 	pTimer->ExpireTime_MS.store(0);
 	pTimer->Exit.store(false);
 	pTimer->Opaque = Arg;
-	Name.empty() ? pTimer->Name = "Unnamed thread" : pTimer->Name = Name;
-	pTimer->CpuAffinity = Affinity;
+	pTimer->Name = Name.empty() ? "Unnamed thread" : std::move(Name);
+	pTimer->IsXboxTimer = IsXboxTimer;
 	TimerList.emplace_back(pTimer);
 
 	return pTimer;

@@ -27,7 +27,7 @@
 
 #include "Button.h"
 #include "InputWindow.h"
-#include "layout_xbox_controller.h" // TODO: Needs a better fix for custom input device support.
+#include "layout_xbox_device.h" // TODO: Needs a better fix for custom input device support.
 #include "gui/resource/ResCxbx.h"
 
 
@@ -51,27 +51,69 @@ void Button::GetText(char* const text, size_t size) const
 	SendMessage(m_button_hwnd, WM_GETTEXT, size, reinterpret_cast<LPARAM>(text));
 }
 
-std::string Button::GetName(int api, int idx) const
+void Button::AddTooltip(HWND hwnd, HWND tooltip_hwnd, char *text) const
 {
-	assert(api == XINPUT_DEFAULT || api == DINPUT_DEFAULT);
-	return button_xbox_ctrl_names[idx][api];
+	assert((hwnd != NULL) && (tooltip_hwnd != NULL));
+
+	TOOLINFO tool = { 0 };
+	tool.cbSize = sizeof(tool);
+	tool.hwnd = hwnd;
+	tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+	tool.uId = reinterpret_cast<UINT_PTR>(m_button_hwnd);
+	tool.lpszText = text;
+	SendMessage(tooltip_hwnd, TTM_ADDTOOL, 0, reinterpret_cast<LPARAM>(&tool));
 }
 
-LRESULT CALLBACK ButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+LRESULT CALLBACK ButtonDukeSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (uMsg)
 	{
 	// Remove the window subclass when this window is destroyed
 	case WM_NCDESTROY: {
-		RemoveWindowSubclass(hWnd, ButtonSubclassProc, uIdSubclass);
+		RemoveWindowSubclass(hWnd, ButtonDukeSubclassProc, uIdSubclass);
 	}
 	break;
 
 	case WM_RBUTTONDOWN: {
-		reinterpret_cast<Button*>(dwRefData)->ClearText();
-		g_InputWindow->UpdateProfile(std::string(), BUTTON_CLEAR);
-		if (reinterpret_cast<Button*>(dwRefData)->GetId() == IDC_SET_MOTOR) {
-			g_InputWindow->UpdateProfile(std::string(), RUMBLE_CLEAR);
+		Button *button = reinterpret_cast<Button *>(dwRefData);
+		if (wParam & MK_SHIFT) {
+			static_cast<DukeInputWindow *>(button->GetWnd())->SwapMoCursorAxis(button);
+			static_cast<DukeInputWindow *>(button->GetWnd())->UpdateProfile(std::string(), BUTTON_SWAP);
+		}
+		else if (!(wParam & ~MK_RBUTTON)) {
+			button->ClearText();
+			static_cast<DukeInputWindow *>(button->GetWnd())->UpdateProfile(std::string(), BUTTON_CLEAR);
+			if (button->GetId() == IDC_SET_MOTOR) {
+				static_cast<DukeInputWindow *>(button->GetWnd())->UpdateProfile(std::string(), RUMBLE_CLEAR);
+			}
+		}
+	}
+	break;
+
+	}
+
+	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+LRESULT CALLBACK ButtonSbcSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+	switch (uMsg)
+	{
+		// Remove the window subclass when this window is destroyed
+	case WM_NCDESTROY: {
+		RemoveWindowSubclass(hWnd, ButtonSbcSubclassProc, uIdSubclass);
+	}
+	break;
+
+	case WM_RBUTTONDOWN: {
+		Button *button = reinterpret_cast<Button *>(dwRefData);
+		if (wParam & MK_SHIFT) {
+			static_cast<SbcInputWindow *>(button->GetWnd())->SwapMoCursorAxis(button);
+			static_cast<SbcInputWindow *>(button->GetWnd())->UpdateProfile(std::string(), BUTTON_SWAP);
+		}
+		else if (!(wParam & ~MK_RBUTTON)) {
+			button->ClearText();
+			static_cast<SbcInputWindow *>(button->GetWnd())->UpdateProfile(std::string(), BUTTON_CLEAR);
 		}
 	}
 	break;

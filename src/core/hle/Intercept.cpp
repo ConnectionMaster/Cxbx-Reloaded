@@ -80,6 +80,16 @@ bool bLLE_GPU = false; // Set this to true for experimental GPU (graphics) LLE
 bool bLLE_USB = false; // Set this to true for experimental USB (input) LLE
 bool bLLE_JIT = false; // Set this to true for experimental JIT
 
+void* GetXboxSymbolPointer(std::string symbolName)
+{
+    auto symbol = g_SymbolAddresses.find(symbolName);
+    if (symbol != g_SymbolAddresses.end()) {
+        return (void*)symbol->second;
+    }
+
+    return nullptr;
+}
+
 void* GetXboxFunctionPointer(std::string functionName)
 {
 	void* ptr = GetPatchedFunctionTrampoline(functionName);
@@ -89,13 +99,7 @@ void* GetXboxFunctionPointer(std::string functionName)
 
     // If we got here, the function wasn't patched, so we can just look it up the symbol cache
     // and return the correct offset
-    auto symbol = g_SymbolAddresses.find(functionName);
-    if (symbol != g_SymbolAddresses.end()) {
-        return (void*)symbol->second;
-    }
-
-    // Finally, if none of the above were matched, return nullptr
-    return nullptr;
+    return GetXboxSymbolPointer(functionName);
 }
 
 // NOTE: GetDetectedSymbolName do not get to be in XbSymbolDatabase, get symbol string in Cxbx project only.
@@ -387,8 +391,10 @@ void EmuHLEIntercept(Xbe::Header *pXbeHeader)
 	std::stringstream sstream;
 	char tAsciiTitle[40] = "Unknown";
 	std::setlocale(LC_ALL, "English");
-	std::wcstombs(tAsciiTitle, CxbxKrnl_Xbe->m_Certificate.wszTitleName, sizeof(tAsciiTitle));
-	std::string szTitleName(tAsciiTitle);
+	// Convert the title name character buffer into a string
+	// If all chars are used, it won't be null terminated - we make sure to get the correct length
+	std::wcstombs(tAsciiTitle, CxbxKrnl_Xbe->m_Certificate.wsTitleName, sizeof(tAsciiTitle));
+	std::string szTitleName(tAsciiTitle, strnlen_s(tAsciiTitle, sizeof(tAsciiTitle)));
 	CxbxKrnl_Xbe->PurgeBadChar(szTitleName);
 	sstream << cachePath << szTitleName << "-" << std::hex << uiHash << ".ini";
 	std::string filename = sstream.str();

@@ -160,7 +160,8 @@ Xbe::Xbe(const char *x_szFilename, bool bFromGUI)
 
         setlocale( LC_ALL, "English" );
 
-        wcstombs(m_szAsciiTitle, m_Certificate.wszTitleName, 40);
+        wcstombs(m_szAsciiTitle, m_Certificate.wsTitleName, 40);
+        m_szAsciiTitle[40] = '\0'; // ensure null terminated
 
         printf("OK\n");
 
@@ -193,25 +194,18 @@ Xbe::Xbe(const char *x_szFilename, bool bFromGUI)
 
     // read Xbe section headers
     {
-        printf("Xbe::Xbe: Reading Section Headers...\n");
+        printf("Xbe::Xbe: Reading Section Headers...");
 
         fseek(XbeFile, m_Header.dwSectionHeadersAddr - m_Header.dwBaseAddr, SEEK_SET);
 
         m_SectionHeader = new SectionHeader[m_Header.dwSections];
-
-        for(uint32_t v=0;v<m_Header.dwSections;v++)
+        if (fread(m_SectionHeader, sizeof(*m_SectionHeader), m_Header.dwSections, XbeFile) != m_Header.dwSections)
         {
-            printf("Xbe::Xbe: Reading Section Header 0x%.04X...", v);
-
-            if(fread(&m_SectionHeader[v], sizeof(*m_SectionHeader), 1, XbeFile) != 1)
-            {
-                sprintf(szBuffer, "Unexpected end of file while reading Xbe Section Header %d (%Xh)", v, v);
-                SetFatalError(szBuffer);
-                goto cleanup;
-            }
-
-            printf("OK\n");
+            SetFatalError("Unexpected end of file while reading Xbe Section Headers");
+            goto cleanup;
         }
+
+        printf("OK\n");
     }
 
     // read Xbe section names
@@ -245,25 +239,18 @@ Xbe::Xbe(const char *x_szFilename, bool bFromGUI)
     // read Xbe library versions
 	if (m_Header.dwLibraryVersionsAddr != 0)
 	{
-		printf("Xbe::Xbe: Reading Library Versions...\n");
+		printf("Xbe::Xbe: Reading Library Versions...");
 
 		fseek(XbeFile, m_Header.dwLibraryVersionsAddr - m_Header.dwBaseAddr, SEEK_SET);
 
 		m_LibraryVersion = new LibraryVersion[m_Header.dwLibraryVersions];
-
-		for (uint32_t v = 0; v < m_Header.dwLibraryVersions; v++)
+		if (fread(m_LibraryVersion, sizeof(*m_LibraryVersion), m_Header.dwLibraryVersions, XbeFile) != m_Header.dwLibraryVersions)
 		{
-			printf("Xbe::Xbe: Reading Library Version 0x%.04X...", v);
-
-			if (fread(&m_LibraryVersion[v], sizeof(*m_LibraryVersion), 1, XbeFile) != 1)
-			{
-				sprintf(szBuffer, "Unexpected end of file while reading Xbe Library Version %d (%Xh)", v, v);
-				SetFatalError(szBuffer);
-				goto cleanup;
-			}
-
-			printf("OK\n");
+			SetFatalError("Unexpected end of file while reading Xbe Library Versions");
+			goto cleanup;
 		}
+
+		printf("OK\n");
 	}
 
     // read Xbe sections
@@ -711,19 +698,6 @@ uint8_t *Xbe::GetLogoBitmap(uint32_t x_dwSize)
     return 0;
 }
 
-void *Xbe::FindSection(char *zsSectionName)
-{
-	for (uint32_t v = 0; v < m_Header.dwSections; v++) {
-		if (strcmp(m_szSectionName[v], zsSectionName) == 0) {
-			if (m_SectionHeader[v].dwVirtualAddr > 0 && m_SectionHeader[v].dwVirtualSize > 0) {
-				return m_bzSection[v];
-			}
-		}
-	}
-
-	return nullptr;
-}
-
 void* Xbe::FindSection(xbox::PXBEIMAGE_SECTION section)
 {
 	for (uint32_t v = 0; v < m_Header.dwSections; v++) {
@@ -787,8 +761,8 @@ bool Xbe::CheckSignature()
 	// Hash against all currently known public keys, if these pass, we can guarantee the Xbe is unmodified
 	std::array<RSA_PUBLIC_KEY, 3> keys = { 0 };
 	memcpy(keys[0].Default, (void*)xbox::XePublicKeyDataRetail, 284);
-	memcpy(keys[1].Default, (void*)xbox::XePublicKeyDataChihiroGame, 284);
-	memcpy(keys[2].Default, (void*)xbox::XePublicKeyDataChihiroBoot, 284);
+	memcpy(keys[1].Default, (void*)xbox::XePublicKeyDataDebug, 284);
+	memcpy(keys[2].Default, (void*)xbox::XePublicKeyDataChihiro, 284);
 	// TODO: memcpy(keys[3].Default, (void*)xbox::XePublicKeyDataDebug, 284);
 
 	for (unsigned int i = 0; i < keys.size(); i++) {
@@ -840,3 +814,6 @@ XbeType Xbe::GetXbeType()
 	// Otherwise, the XBE is a Retail build :
 	return XbeType::xtRetail;
 }
+
+template auto Xbe::FindSection<true>(const char *zsSectionName);
+template auto Xbe::FindSection<false>(const char *zsSectionName);

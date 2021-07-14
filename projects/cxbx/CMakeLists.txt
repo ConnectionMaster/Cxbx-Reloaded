@@ -77,10 +77,18 @@ file (GLOB RESOURCES
  "${CXBXR_ROOT_DIR}/src/.editorconfig"
 )
 
+source_group(TREE ${CXBXR_ROOT_DIR}/import PREFIX import FILES
+ ${CXBXR_HEADER_EMU_IMPORT}
+)
+
 source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX header FILES
  ${CXBXR_HEADER_GUIv1}
  ${CXBXR_HEADER_COMMON}
  ${CXBXR_HEADER_EMU}
+)
+
+source_group(TREE ${CXBXR_ROOT_DIR}/import PREFIX import FILES
+ ${CXBXR_SOURCE_EMU_IMPORT}
 )
 
 source_group(TREE ${CXBXR_ROOT_DIR}/src PREFIX source FILES 
@@ -94,9 +102,11 @@ source_group(TREE ${CXBXR_ROOT_DIR} FILES ${RESOURCES})
 add_executable(cxbx WIN32 ${RESOURCES}
  ${CXBXR_HEADER_GUIv1}
  ${CXBXR_HEADER_COMMON}
+ ${CXBXR_HEADER_EMU_IMPORT}
  ${CXBXR_HEADER_EMU}
  ${CXBXR_SOURCE_GUIv1}
  ${CXBXR_SOURCE_COMMON}
+ ${CXBXR_SOURCE_EMU_IMPORT}
  ${CXBXR_SOURCE_EMU}
  ${CXBXR_GIT_VERSION_H}
 )
@@ -107,19 +117,19 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
  # Reference: https://docs.microsoft.com/en-us/cpp/build/reference/linker-options
  set_target_properties(cxbx PROPERTIES
   LINK_FLAGS "
-  /INCREMENTAL:NO
-  /LARGEADDRESSAWARE
-  /FIXED
-  /SAFESEH:NO
-  /DYNAMICBASE:NO
-  /BASE:0x10000
-  /STACK:65536,65536
-  /NODEFAULTLIB:libcmt
-  /DELAYLOAD:wpcap.dll
+  /INCREMENTAL:NO \
+  /LARGEADDRESSAWARE \
+  /FIXED \
+  /SAFESEH:NO \
+  /DYNAMICBASE:NO \
+  /BASE:0x10000 \
+  /STACK:65536,65536 \
+  /NODEFAULTLIB:libcmt \
+  /DELAYLOAD:wpcap.dll \
   "
   LINK_FLAGS_RELEASE "
-  /LTCG
-  /DEBUG
+  /LTCG \
+  /DEBUG \
   "
  )
 
@@ -134,16 +144,16 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
  # /Qpar = Enable automatic parallelize loops in the code
 
  # Set optimization options for release build
- set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}
-  /Zi
-  /Ob2
-  /Oi
-  /Ot
-  /GL
-
-  /GS-
-  /Gy
-  /Qpar
+ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} \
+  /Zi \
+  /Ob2 \
+  /Oi \
+  /Ot \
+  /GL \
+  \
+  /GS- \
+  /Gy \
+  /Qpar \
   "
  )
  
@@ -158,6 +168,7 @@ set(WINS_LIB
  legacy_stdio_definitions
  d3d9
  d3dcompiler
+ delayimp
  dinput8
  dxguid
  odbc32
@@ -181,8 +192,13 @@ target_link_libraries(cxbx
  subhook
  libtomcrypt
  SDL2
+ imgui
 
  ${WINS_LIB}
+)
+
+install(TARGETS ${PROJECT_NAME}
+  RUNTIME DESTINATION bin
 )
 
 if(${CMAKE_GENERATOR} MATCHES "Visual Studio ([^9]|[9][0-9])")
@@ -190,3 +206,12 @@ if(${CMAKE_GENERATOR} MATCHES "Visual Studio ([^9]|[9][0-9])")
 endif()
 
 add_dependencies(cxbx cxbxr-ldr cxbxr-emu misc-batch)
+
+# Try to stop cmake from building hlsl files
+# Which are all currently loaded at runtime only
+set_source_files_properties(
+  ${CXBXR_HEADER_HLSL}
+  PROPERTIES
+  HEADER_FILE_ONLY TRUE
+  VS_TOOL_OVERRIDE "None"
+)

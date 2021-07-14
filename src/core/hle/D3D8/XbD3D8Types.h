@@ -83,6 +83,8 @@
 #define IDirect3DSwapChain              IDirect3DSwapChain9
 #define IDirect3DQuery                  IDirect3DQuery9
 
+typedef xbox::word_xt INDEX16; // TODO: Move INDEX16 into xbox namespace
+
 namespace xbox {
 
 // TODO : Declare these aliasses as Xbox type
@@ -1007,6 +1009,18 @@ constexpr DWORD X_D3DCOLORWRITEENABLE_ALL = 0x01010101; // Xbox ext.
 // deferred texture stage state "unknown" flag
 #define X_D3DTSS_UNK 0x7fffffff
 
+typedef enum _D3DVERTEXBLENDFLAGS
+{
+	X_D3DVBF_DISABLE = 0,              // 1 matrix,   0 weights => final weight effectively 1 (Disable vertex blending)
+	X_D3DVBF_1WEIGHTS = 1,             // 2 matrices, 1 weights => final weight calculated
+	X_D3DVBF_2WEIGHTS = 3,             // 3 matrices, 2 weights => final weight calculated
+	X_D3DVBF_3WEIGHTS = 5,             // 4 matrices, 3 weights => final weight calculated
+	X_D3DVBF_2WEIGHTS2MATRICES = 2,    // 2 matrices, 2 weights (Xbox ext.)
+	X_D3DVBF_3WEIGHTS3MATRICES = 4,    // 3 matrices, 3 weights (Xbox ext.)
+	X_D3DVBF_4WEIGHTS4MATRICES = 6,    // 4 matrices, 4 weights (Xbox ext.)
+	X_D3DVBF_FORCE_DWORD = 0x7fffffff
+} X_D3DVERTEXBLENDFLAGS;
+
 typedef DWORD X_VERTEXSHADERCONSTANTMODE;
 
 // Xbox vertex shader constant modes
@@ -1025,10 +1039,8 @@ typedef DWORD X_VERTEXSHADERCONSTANTMODE;
 // TODO co-locate shader workaround constants with shader code
 #define CXBX_D3DVS_CONSTREG_VREGDEFAULTS_BASE      (X_D3DVS_CONSTREG_COUNT)
 #define CXBX_D3DVS_CONSTREG_VREGDEFAULTS_SIZE      16
-
 #define CXBX_D3DVS_CONSTREG_VREGDEFAULTS_FLAG_BASE (CXBX_D3DVS_CONSTREG_VREGDEFAULTS_BASE + CXBX_D3DVS_CONSTREG_VREGDEFAULTS_SIZE)
 #define CXBX_D3DVS_CONSTREG_VREGDEFAULTS_FLAG_SIZE 4
-
 #define CXBX_D3DVS_SCREENSPACE_SCALE_BASE     (CXBX_D3DVS_CONSTREG_VREGDEFAULTS_FLAG_BASE + CXBX_D3DVS_CONSTREG_VREGDEFAULTS_FLAG_SIZE)
 #define CXBX_D3DVS_NORMALIZE_SCALE_SIZE     1
 
@@ -1037,6 +1049,8 @@ typedef DWORD X_VERTEXSHADERCONSTANTMODE;
 
 #define CXBX_D3DVS_TEXTURES_SCALE_BASE             (CXBX_D3DVS_SCREENSPACE_OFFSET_BASE + CXBX_D3DVS_NORMALIZE_OFFSET_SIZE)
 #define CXBX_D3DVS_TEXTURES_SCALE_SIZE             4
+
+#define CXBX_D3DVS_CONSTREG_FOGINFO                (CXBX_D3DVS_TEXTURES_SCALE_BASE + CXBX_D3DVS_TEXTURES_SCALE_SIZE)
 
 #define X_D3DSCM_RESERVED_CONSTANT_SCALE_CORRECTED (X_D3DSCM_RESERVED_CONSTANT_SCALE + X_D3DSCM_CORRECTION)
 #define X_D3DSCM_RESERVED_CONSTANT_OFFSET_CORRECTED (X_D3DSCM_RESERVED_CONSTANT_OFFSET + X_D3DSCM_CORRECTION)
@@ -1163,6 +1177,7 @@ struct X_D3DVertexShader
 // vertex shader input registers for fixed function vertex shader
 
 //          Name                   Register number      D3DFVF
+const int X_D3DVSDE_VERTEX       = -1; // Xbox extension for Begin/End drawing - equivalent to POSITION
 const int X_D3DVSDE_POSITION     = 0; // Corresponds to X_D3DFVF_XYZ
 const int X_D3DVSDE_BLENDWEIGHT  = 1; // Corresponds to X_D3DFVF_XYZB1? (was X_D3DFVF_XYZRHW?)
 const int X_D3DVSDE_NORMAL       = 2; // Corresponds to X_D3DFVF_NORMAL
@@ -1176,7 +1191,6 @@ const int X_D3DVSDE_TEXCOORD0    = 9; // Corresponds to X_D3DFVF_TEX1 (not X_D3D
 const int X_D3DVSDE_TEXCOORD1    = 10; // Corresponds to X_D3DFVF_TEX2
 const int X_D3DVSDE_TEXCOORD2    = 11; // Corresponds to X_D3DFVF_TEX3
 const int X_D3DVSDE_TEXCOORD3    = 12; // Corresponds to X_D3DFVF_TEX4
-const int X_D3DVSDE_VERTEX       = 0xFFFFFFFF; // Xbox extension for Begin/End drawing (data is a D3DVSDT_FLOAT4)
 
 //typedef X_D3DVSDE = X_D3DVSDE_POSITION..High(DWORD)-2; // Unique declaration to make overloads possible;
 
@@ -1304,6 +1318,22 @@ typedef enum _X_D3DVSD_TOKENTYPE
 #define X_D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR          0x00030000
 #define X_D3DTSS_TCI_OBJECT                               0x00040000 // Warning! Collides with host Direct3D 9 D3DTSS_TCI_SPHEREMAP
 #define X_D3DTSS_TCI_SPHEREMAP                            0x00050000
+
+enum X_D3DTRANSFORMSTATETYPE {
+	X_D3DTS_VIEW = 0,
+	X_D3DTS_PROJECTION = 1,
+	X_D3DTS_TEXTURE0 = 2,
+	X_D3DTS_TEXTURE1 = 3,
+	X_D3DTS_TEXTURE2 = 4,
+	X_D3DTS_TEXTURE3 = 5,
+	X_D3DTS_WORLD = 6,
+	X_D3DTS_WORLD1 = 7,
+	X_D3DTS_WORLD2 = 8,
+	X_D3DTS_WORLD3 = 9,
+
+	X_D3DTS_MAX = 10,
+	X_D3DTS_FORCE_DWORD = 0x7FFFFFFF,
+};
 
 typedef DWORD NV2AMETHOD;
 

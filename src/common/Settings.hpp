@@ -29,10 +29,12 @@
 #include "Cxbx.h"
 
 #include "SimpleIni.h"
-#include "input\InputDevice.h"
+#include "common\input\InputManager.h"
 #include "common\util\CxbxUtil.h"
 #include <string>
 #include <array>
+
+#include "core/common/imgui/settings.h"
 
 extern std::string g_exec_filepath;
 
@@ -98,7 +100,7 @@ public:
         unsigned int FlagsLLE;
 		DebugMode KrnlDebugMode;
 		char szKrnlDebug[MAX_PATH] = "";
-		char szStorageLocation[MAX_PATH] = "";
+		char szStorageLocation[xbox::max_path] = "";
         unsigned int LoggedModules[NUM_INTEGERS_LOG];
 		int LogLevel = 1;
 		bool bUseLoaderExec;
@@ -134,14 +136,18 @@ public:
 	} m_audio;
 	static_assert(sizeof(s_audio) == 0x4C, assert_check_shared_memory(s_audio));
 
+	// Input general settings
 	struct s_input_general {
 		long MoAxisRange;
 		long MoWheelRange;
-	};
-	s_input_general m_input_general;
+		bool IgnoreKbMoUnfocus;
+		bool Reserved1[3];
+	} m_input_general;
+	static_assert(sizeof(s_input_general) == 0xC, assert_check_shared_memory(s_input_general));
 
 	struct s_input_port {
 		int Type;
+		int SlotType[XBOX_CTRL_NUM_SLOTS];
 		std::string DeviceName;
 		std::string ProfileName;
 	};
@@ -177,6 +183,8 @@ public:
 		int  Reserved99[8] = { 0 };
 	} m_hacks;
 	static_assert(sizeof(s_hack) == 0x28, assert_check_shared_memory(s_hack));
+
+	overlay_settings m_overlay;
 
 private:
 	void RemoveLegacyConfigs(unsigned int CurrentRevision);

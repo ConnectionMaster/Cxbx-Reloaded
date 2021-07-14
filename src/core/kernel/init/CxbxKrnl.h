@@ -136,9 +136,6 @@ extern "C" {
 
 extern Xbe::Certificate *g_pCertificate;
 
-/*! validate version string match */
-bool CxbxKrnlVerifyVersion(const char *szVersion);
-
 extern bool g_bIsDebugKernel;
 
 bool CreateSettings();
@@ -166,7 +163,7 @@ void CxbxKrnlSuspend();
 void CxbxKrnlResume();
 
 /*! terminate gracefully the emulation */
-void CxbxKrnlShutDown();
+void CxbxKrnlShutDown(bool is_reboot = false);
 
 /*! display the fatal error message*/
 void CxbxKrnlPrintUEM(ULONG ErrorCode);
@@ -204,7 +201,7 @@ extern ULONG g_CxbxFatalErrorCode;
 
 extern size_t g_SystemMaxMemory;
 
-void InitXboxThread(DWORD_PTR cores);
+void InitXboxThread();
 
 /*! thread local storage structure */
 extern Xbe::TLS *CxbxKrnl_TLS;
@@ -226,7 +223,7 @@ extern std::string CxbxKrnl_DebugFileName;
 extern char szFilePath_CxbxReloaded_Exe[MAX_PATH];
 extern char szFolder_CxbxReloadedData[MAX_PATH];
 extern char szFilePath_EEPROM_bin[MAX_PATH];
-extern char szFilePath_Xbe[MAX_PATH*2];
+extern char szFilePath_Xbe[xbox::max_path*2];
 
 #ifdef __cplusplus
 }

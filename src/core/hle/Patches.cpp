@@ -148,6 +148,7 @@ std::map<const std::string, const xbox_patch_t> g_PatchTable = {
 	PATCH_ENTRY("D3DDevice_SetStateVB", xbox::EMUPATCH(D3DDevice_SetStateVB), PATCH_HLE_D3D),
 	PATCH_ENTRY("D3DDevice_SetStipple", xbox::EMUPATCH(D3DDevice_SetStipple), PATCH_HLE_D3D),
 	PATCH_ENTRY("D3DDevice_SetStreamSource", xbox::EMUPATCH(D3DDevice_SetStreamSource), PATCH_HLE_D3D),
+	PATCH_ENTRY("D3DDevice_SetStreamSource_0__LTCG_eax_StreamNumber_edi_pStreamData_ebx_Stride", xbox::EMUPATCH(D3DDevice_SetStreamSource_0__LTCG_eax_StreamNumber_edi_pStreamData_ebx_Stride), PATCH_HLE_D3D),
 	PATCH_ENTRY("D3DDevice_SetStreamSource_4", xbox::EMUPATCH(D3DDevice_SetStreamSource_4), PATCH_HLE_D3D),
 	PATCH_ENTRY("D3DDevice_SetStreamSource_8", xbox::EMUPATCH(D3DDevice_SetStreamSource_8), PATCH_HLE_D3D),
 	PATCH_ENTRY("D3DDevice_SetStreamSource_8__LTCG_edx_StreamNumber", xbox::EMUPATCH(D3DDevice_SetStreamSource_8__LTCG_edx_StreamNumber), PATCH_HLE_D3D),
@@ -311,7 +312,8 @@ std::map<const std::string, const xbox_patch_t> g_PatchTable = {
 	PATCH_ENTRY("IDirectSound_CommitEffectData", xbox::EMUPATCH(IDirectSound_CommitEffectData), PATCH_HLE_DSOUND),
 	PATCH_ENTRY("IDirectSound_CreateSoundBuffer", xbox::EMUPATCH(IDirectSound_CreateSoundBuffer), PATCH_HLE_DSOUND),
 	PATCH_ENTRY("IDirectSound_CreateSoundStream", xbox::EMUPATCH(IDirectSound_CreateSoundStream), PATCH_HLE_DSOUND),
-	PATCH_ENTRY("IDirectSound_DownloadEffectsImage", xbox::EMUPATCH(IDirectSound_DownloadEffectsImage), PATCH_HLE_DSOUND),
+//	PATCH_ENTRY("IDirectSound_DownloadEffectsImage", xbox::EMUPATCH(IDirectSound_DownloadEffectsImage), PATCH_HLE_DSOUND),
+	PATCH_ENTRY("CDirectSound_DownloadEffectsImage", xbox::EMUPATCH(CDirectSound_DownloadEffectsImage), PATCH_HLE_DSOUND),
 	PATCH_ENTRY("IDirectSound_EnableHeadphones", xbox::EMUPATCH(IDirectSound_EnableHeadphones), PATCH_HLE_DSOUND),
 	PATCH_ENTRY("IDirectSound_GetCaps", xbox::EMUPATCH(IDirectSound_GetCaps), PATCH_HLE_DSOUND),
 	PATCH_ENTRY("IDirectSound_GetEffectData", xbox::EMUPATCH(IDirectSound_GetEffectData), PATCH_HLE_DSOUND),
@@ -363,6 +365,8 @@ std::map<const std::string, const xbox_patch_t> g_PatchTable = {
 	PATCH_ENTRY("XSetProcessQuantumLength", xbox::EMUPATCH(XSetProcessQuantumLength), PATCH_ALWAYS),
 	PATCH_ENTRY("timeKillEvent", xbox::EMUPATCH(timeKillEvent), PATCH_ALWAYS),
 	PATCH_ENTRY("timeSetEvent", xbox::EMUPATCH(timeSetEvent), PATCH_ALWAYS),
+	PATCH_ENTRY("XReadMUMetaData", xbox::EMUPATCH(XReadMUMetaData), PATCH_ALWAYS),
+	PATCH_ENTRY("XUnmountMU", xbox::EMUPATCH(XUnmountMU), PATCH_ALWAYS),
 };
 
 std::unordered_map<std::string, subhook::Hook> g_FunctionHooks;
@@ -442,7 +446,8 @@ void EmuInstallPatches()
 		EmuInstallPatch(it.first, it.second);
 	}
 
-	LookupTrampolines();
+	LookupTrampolinesD3D();
+	LookupTrampolinesXAPI();
 }
 
 void* GetPatchedFunctionTrampoline(const std::string functionName)
